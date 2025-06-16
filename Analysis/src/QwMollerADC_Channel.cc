@@ -968,12 +968,19 @@ void QwMollerADC_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleMo
   //  This channel is not used, so skip setting up the RNTuple.
   if (IsNameEmpty()) return;
 
+  // Pre-allocate vectors to avoid repeated reallocations
+  // Estimate: ~20 fields per channel maximum
+  vector.reserve(vector.size() + 20);
+  fields.reserve(fields.size() + 20);
+
   //  Decide what to store based on prefix
   SetDataToSaveByPrefix(TString(prefix.c_str()));
 
   // Apply same prefix processing as legacy method to ensure field name consistency
   TString prefix_tstring(prefix.c_str());
   TString basename = prefix_tstring(0, (prefix_tstring.First("|") >= 0)? prefix_tstring.First("|"): prefix_tstring.Length()) + GetElementName();
+
+  fTreeArrayIndex = vector.size();
 
   bHw_sum =     gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "hw_sum");
   bHw_sum_raw = gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "hw_sum_raw");
@@ -982,8 +989,6 @@ void QwMollerADC_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleMo
   bNum_samples = gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "num_samples");
   bDevice_Error_Code = gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "Device_Error_Code");
   bSequence_number = gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "sequence_number");
-
-  fTreeArrayIndex = vector.size();
 
   if (gQwHists.MatchDeviceParamsFromList(basename.Data())
     && (bHw_sum || bBlock || bNum_samples || bDevice_Error_Code ||
@@ -1075,7 +1080,7 @@ void QwMollerADC_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleMo
       }
     }
   }
-
+  
   fTreeArrayNumEntries = vector.size() - fTreeArrayIndex;
 }
 
@@ -1104,17 +1109,18 @@ void QwMollerADC_Channel::FillRNTupleVector(std::vector<Double_t> &values) const
     return;
   }
   
-  if (values.size() < fTreeArrayIndex + fTreeArrayNumEntries) {
-    if (bDEBUG) std::cerr << "QwMollerADC_Channel::FillRNTupleVector:  values.size()=="
+  // Fast path: pre-computed array bounds, skip redundant size checks
+  // values vector should already be properly sized by caller
+  if (fTreeArrayIndex + fTreeArrayNumEntries <= values.size()) {
+    // Reuse existing tree vector filling logic since the new interface sets up the indices properly
+    this->FillTreeVector(values);
+  } else if (bDEBUG) {
+    std::cerr << "QwMollerADC_Channel::FillRNTupleVector:  values.size()=="
               << values.size()
               << "; fTreeArrayIndex+fTreeArrayNumEntries=="
               << fTreeArrayIndex+fTreeArrayNumEntries
               << std::endl;
-    return;
   }
-
-  // Use the same logic as FillTreeVector since the new interface sets up the indices properly
-  this->FillTreeVector(values);
 }
 
 QwMollerADC_Channel& QwMollerADC_Channel::operator= (const QwMollerADC_Channel &value)

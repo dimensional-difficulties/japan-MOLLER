@@ -1451,6 +1451,11 @@ void QwADC18_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleModel>
     return;
   }
   
+  // Pre-allocate vectors to avoid repeated reallocations
+  // Estimate: ~10 fields per channel maximum
+  vector.reserve(vector.size() + 10);
+  fields.reserve(fields.size() + 10);
+  
   // Decide what to store based on prefix
   SetDataToSaveByPrefix(TString(prefix.c_str()));
   

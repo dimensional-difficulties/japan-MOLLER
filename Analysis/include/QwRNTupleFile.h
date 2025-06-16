@@ -119,8 +119,12 @@ class QwRNTuple {
     /// Construct the fields and vector for generic objects
     template < class T >
     void ConstructFieldsAndVector(T& object) {
-      // Reserve space for the field vector
+      // Reserve space for the field vector and fields vector
       fVector.reserve(RNTUPLE_FIELD_MAX_SIZE);
+      fFields.reserve(RNTUPLE_FIELD_MAX_SIZE);
+      fFieldNames.reserve(RNTUPLE_FIELD_MAX_SIZE);
+      fFieldTypes.reserve(RNTUPLE_FIELD_MAX_SIZE);
+      fFieldPtrs.reserve(RNTUPLE_FIELD_MAX_SIZE);
       
       // Use the correct method signature that actually exists in the codebase
       TString prefix_tstring(fPrefix.c_str());
@@ -396,54 +400,39 @@ class QwRNTupleFile {
       }
       
       // Actually write to RNTuple using the writer
-      if (fRNTupleWriters.find(name) != fRNTupleWriters.end() && 
-          fConsolidatedFields.find(name) != fConsolidatedFields.end()) {
+      auto writer_it = fRNTupleWriters.find(name);
+      auto fields_it = fConsolidatedFields.find(name);
+      auto cache_it = fFieldCache.find(name);
+      
+      if (writer_it != fRNTupleWriters.end() && 
+          fields_it != fConsolidatedFields.end() &&
+          cache_it != fFieldCache.end()) {
         
-        // Collect data from all registered ntuples for this RNTuple
+        // Use cached field mappings for fast data transfer
         if (!ntuples.empty()) {
           try {
-            // Transfer data from QwRNTuple vectors to the writer's consolidated fields
-            const auto& consolidated_fields = fConsolidatedFields[name];
+            const auto& field_cache = cache_it->second;
             
+            // Fast path: use pre-computed field mappings
             for (auto* ntuple : ntuples) {
               const auto& vector = ntuple->GetVector();
-              const auto& field_names = ntuple->GetFieldNames();
-              const auto& field_types = ntuple->GetFieldTypes();
               
-              // Transfer each field's data to the corresponding consolidated field
-              for (size_t i = 0; i < std::min({vector.size(), field_names.size(), field_types.size()}); ++i) {
-                const std::string& field_name = field_names[i];
-                const std::string& field_type = field_types[i];
+              // Get this ntuple's cache entry
+              auto ntuple_cache_it = field_cache.find(ntuple);
+              if (ntuple_cache_it != field_cache.end()) {
+                const auto& mappings = ntuple_cache_it->second;
                 
-                auto field_it = consolidated_fields.find(field_name);
-                if (field_it != consolidated_fields.end()) {
-                  // Cast back to the correct type and assign the value
-                  if (field_type == typeid(Double_t).name()) {
-                    auto double_field = std::static_pointer_cast<Double_t>(field_it->second);
-                    if (double_field) {
-                      *double_field = vector[i];
-                      QwVerbose << "Filled field " << field_name << " with value " << vector[i] << QwLog::endl;
-                    }
-                  } else if (field_type == typeid(Float_t).name()) {
-                    auto float_field = std::static_pointer_cast<Float_t>(field_it->second);
-                    if (float_field) {
-                      *float_field = static_cast<Float_t>(vector[i]);
-                    }
-                  } else if (field_type == typeid(Int_t).name()) {
-                    auto int_field = std::static_pointer_cast<Int_t>(field_it->second);
-                    if (int_field) {
-                      *int_field = static_cast<Int_t>(vector[i]);
-                    }
+                // Direct assignment using cached pointers - no lookups needed
+                for (const auto& mapping : mappings) {
+                  if (mapping.vector_index < vector.size()) {
+                    *(mapping.field_ptr) = vector[mapping.vector_index];
                   }
-                  // Add more types as needed
-                } else {
-                  QwVerbose << "Field " << field_name << " not found in consolidated fields" << QwLog::endl;
                 }
               }
             }
             
             // Fill the entry - the writer will use the consolidated field pointers
-            return fRNTupleWriters[name]->Fill();
+            return writer_it->second->Fill();
             
           } catch (const std::exception& e) {
             QwError << "Exception in FillRNTuple for " << name << ": " << e.what() << QwLog::endl;
@@ -557,6 +546,13 @@ class QwRNTupleFile {
     std::map<const std::string, std::unique_ptr<ROOT::RNTupleWriter>> fRNTupleWriters;
     std::map<const std::string, std::map<std::string, std::shared_ptr<void>>> fConsolidatedFields;
     std::set<std::string> fDisabledRNTuples;
+    
+    /// Performance optimization: cached field mappings to avoid map lookups during Fill
+    struct FieldMapping {
+      Double_t* field_ptr;  // Direct pointer to field for fast assignment
+      size_t vector_index;  // Index in the source vector
+    };
+    std::map<const std::string, std::map<QwRNTuple*, std::vector<FieldMapping>>> fFieldCache;
 
     /// Directory management (same as QwRootFile)
     std::map<const std::string, TDirectory*> fDirsByName;
@@ -585,6 +581,8 @@ class QwRNTupleFile {
             // Consolidate all field definitions from QwRNTuple objects into the writer's model
             // This is necessary because RNTupleWriter requires exclusive ownership of the model
             std::map<std::string, std::shared_ptr<void>> consolidated_fields;
+            
+            // Note: std::map doesn't have reserve(), but we can pre-size if needed later
             
             for (auto* qw_ntuple : fRNTupleByName[name]) {
               const auto& field_names = qw_ntuple->GetFieldNames();
@@ -617,6 +615,9 @@ class QwRNTupleFile {
             // Store consolidated field pointers for data transfer during Fill operations
             fConsolidatedFields[name] = std::move(consolidated_fields);
             
+            // Build field cache for fast data transfer
+            BuildFieldCache(name);
+            
             // Now create the writer with the properly constructed model
             // ROOT::RNTupleWriter takes unique ownership of the model via std::move
             fRNTupleWriters[name] = ROOT::RNTupleWriter::Append(std::move(writer_model), name, *fRootFile);
@@ -629,6 +630,36 @@ class QwRNTupleFile {
           }
         }
       }
+    }
+    
+    /// Build field cache for fast data transfer during Fill operations
+    void BuildFieldCache(const std::string& name) {
+      auto& cache = fFieldCache[name];
+      const auto& consolidated_fields = fConsolidatedFields[name];
+      
+      for (auto* ntuple : fRNTupleByName[name]) {
+        const auto& field_names = ntuple->GetFieldNames();
+        const auto& field_types = ntuple->GetFieldTypes();
+        
+        auto& mappings = cache[ntuple];
+        mappings.reserve(field_names.size());
+        
+        for (size_t i = 0; i < field_names.size(); ++i) {
+          const std::string& field_name = field_names[i];
+          const std::string& field_type = field_types[i];
+          
+          auto field_it = consolidated_fields.find(field_name);
+          if (field_it != consolidated_fields.end() && field_type == typeid(Double_t).name()) {
+            FieldMapping mapping;
+            mapping.field_ptr = std::static_pointer_cast<Double_t>(field_it->second).get();
+            mapping.vector_index = i;
+            mappings.push_back(mapping);
+          }
+        }
+      }
+      
+      QwVerbose << "Built field cache for RNTuple " << name 
+                << " with " << cache.size() << " ntuples" << QwLog::endl;
     }
 };
 

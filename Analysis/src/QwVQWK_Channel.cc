@@ -1259,6 +1259,11 @@ void QwVQWK_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleModel> 
   if (IsNameEmpty()) {
     // This channel is not used, so skip setting up RNTuple fields.
   } else {
+    // Pre-allocate vectors to avoid repeated reallocations
+    // Estimate: ~15 fields per channel maximum
+    vector.reserve(vector.size() + 15);
+    fields.reserve(fields.size() + 15);
+    
     // Apply same prefix processing as legacy method to ensure field name consistency
     TString prefix_tstring(prefix.c_str());
     TString basename = prefix_tstring(0, (prefix_tstring.First("|") >= 0)? prefix_tstring.First("|"): prefix_tstring.Length()) + GetElementName();
