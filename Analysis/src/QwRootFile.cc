@@ -21,7 +21,8 @@ Double_t QwRootTree::kUnitsValue[] = { 1e-6, 1e-9, 1e-3, 1 , 1e-3, 1};
 QwRootFile::QwRootFile(const TString& run_label)
   : fRootFile(0), fMakePermanent(0),
     fMapFile(0), fEnableMapFile(kFALSE),
-    fUpdateInterval(-1), fUseRNTuple(false), fRNTupleFile(nullptr), 
+    fUpdateInterval(-1), fUseRNTuple(false), fRNTupleSeparateFiles(true), 
+    fTreeSeparateFiles(false), fTreeFile(nullptr), fRNTupleFile(nullptr), 
     fRunLabel(run_label), fOptions(&gQwOptions)
 {
   // Process the configuration options
@@ -91,6 +92,38 @@ QwRootFile::QwRootFile(const TString& run_label)
     }
 
     fRootFile->SetCompressionLevel(fCompressionLevel);
+    
+    // Create separate tree file if requested and RNTuple is not enabled
+    if (fTreeSeparateFiles && !fUseRNTuple) {
+      TString treefilename = fRootFileDir;
+      TString hostname = gSystem->HostName();
+      pid_t pid = getpid();
+      
+      TString tree_permanent_name = fRootFileDir
+        + Form("/%s%s_trees.root", fRootFileStem.Data(), run_label.Data());
+      
+      if (fUseTemporaryFile) {
+        treefilename += Form("/%s%s_trees.%s.%d.root",
+                           fRootFileStem.Data(), run_label.Data(),
+                           hostname.Data(), pid);
+      } else {
+        treefilename = tree_permanent_name;
+      }
+      
+      fTreeFile = new TFile(treefilename.Data(), "RECREATE", "myfile2");
+      if (!fTreeFile || fTreeFile->IsZombie()) {
+        QwError << "Separate tree file " << treefilename
+                << " could not be opened!" << QwLog::endl;
+        if (fTreeFile) {
+          delete fTreeFile;
+          fTreeFile = nullptr;
+        }
+      } else {
+        QwMessage << "Opened " << (fUseTemporaryFile?"temporary ":"")
+                  << "tree file " << treefilename << QwLog::endl;
+        fTreeFile->SetCompressionLevel(fCompressionLevel);
+      }
+    }
   }
 }
 
@@ -116,6 +149,11 @@ QwRootFile::~QwRootFile()
   if (fRootFile) {
     TString rootfilename = fRootFile->GetName();
 
+    // Commit RNTuple data before closing the file
+    if (fRNTupleFile) {
+      fRNTupleFile->CommitRNTuples();
+    }
+
     fRootFile->Close();
     delete fRootFile;
     fRootFile = 0;
@@ -137,6 +175,38 @@ QwRootFile::~QwRootFile()
       } else {
 	QwMessage << "Was able to" << action << rootfilename << QwLog::endl;
 	QwMessage << "Root file is " << fPermanentName << QwLog::endl;
+      }
+    }
+  }
+
+  // Close the separate tree file if it exists
+  if (fTreeFile) {
+    TString treefilename = fTreeFile->GetName();
+    
+    fTreeFile->Close();
+    delete fTreeFile;
+    fTreeFile = 0;
+    
+    if (fUseTemporaryFile) {
+      // Generate the permanent tree filename
+      TString tree_permanent_name = fRootFileDir
+        + Form("/%s%s_trees.root", fRootFileStem.Data(), fRunLabel.Data());
+      
+      int err;
+      const char* action;
+      if (fMakePermanent) {
+        action = " rename ";
+        err = rename(treefilename.Data(), tree_permanent_name.Data());
+      } else {
+        action = " remove ";
+        err = remove(treefilename.Data());
+      }
+      
+      if (err) {
+        QwWarning << "Couldn't" << action << treefilename << QwLog::endl;
+      } else {
+        QwMessage << "Was able to" << action << treefilename << QwLog::endl;
+        QwMessage << "Tree file is " << tree_permanent_name << QwLog::endl;
       }
     }
   }
@@ -248,8 +318,16 @@ void QwRootFile::DefineOptions(QwOptions &options)
     ("enable-rntuple", po::value<bool>()->default_bool_value(false),
      "enable RNTuple output format instead of TTree");
   options.AddOptions("RNTuple options")
+    ("rntuple-separate-files", po::value<bool>()->default_bool_value(true),
+     "store RNTuples in separate files from histograms (default: true)");
+  options.AddOptions("RNTuple options")
     ("disable-rntuple", po::value<std::vector<std::string>>()->composing(),
      "disable output to specific RNTuple regex");
+  
+  // Define TTree separation options (when RNTuple is not enabled)
+  options.AddOptions("Tree options")
+    ("tree-separate-files", po::value<bool>()->default_bool_value(false),
+     "store TTrees in separate files from histograms when RNTuple is disabled (default: false)");
   
   // Define RNTuple-specific options via the wrapper class
   QwRNTupleFile::DefineOptions(options);
@@ -323,10 +401,18 @@ void QwRootFile::ProcessOptions(QwOptions &options)
 
   // Process RNTuple options
   fUseRNTuple = options.GetValue<bool>("enable-rntuple");
+  fRNTupleSeparateFiles = options.GetValue<bool>("rntuple-separate-files");
+  
+  // Process TTree separation option (only relevant when RNTuple is disabled)
+  fTreeSeparateFiles = options.GetValue<bool>("tree-separate-files");
   
   // Debug output to verify RNTuple mode detection
   QwMessage << "QwRootFile::ProcessOptions: enable-rntuple = " 
             << (fUseRNTuple ? "TRUE" : "FALSE") << QwLog::endl;
+  QwMessage << "QwRootFile::ProcessOptions: rntuple-separate-files = " 
+            << (fRNTupleSeparateFiles ? "TRUE" : "FALSE") << QwLog::endl;
+  QwMessage << "QwRootFile::ProcessOptions: tree-separate-files = " 
+            << (fTreeSeparateFiles ? "TRUE" : "FALSE") << QwLog::endl;
   
   // Process disabled RNTuples if RNTuple mode is enabled
   if (fUseRNTuple) {
@@ -346,7 +432,42 @@ void QwRootFile::ProcessOptions(QwOptions &options)
  * histograms.
  */
 Bool_t QwRootFile::HasAnyFilled(void) {
-  return this->HasAnyFilled(fRootFile);
+  // Always check if histograms or metadata actually contain data
+  Bool_t has_filled = this->HasAnyFilled(fRootFile);
+  
+  // If we're using RNTuple mode in same-file mode, consider RNTuple data as "filled"
+  if (!has_filled && fUseRNTuple && !fRNTupleSeparateFiles && fRNTupleFile) {
+    has_filled = kTRUE;
+  }
+  
+  // If we're using separate tree files, also check the tree file
+  if (!has_filled && fTreeSeparateFiles && !fUseRNTuple && fTreeFile) {
+    Bool_t tree_has_filled = this->HasAnyFilled(fTreeFile);
+    if (tree_has_filled) {
+      QwMessage << "QwRootFile::HasAnyFilled: Separate tree file has filled trees, keeping main file" << QwLog::endl;
+      has_filled = kTRUE;
+    }
+  }
+  
+  if (fUseRNTuple) {
+    if (has_filled) {
+      if (fRNTupleSeparateFiles) {
+        QwMessage << "QwRootFile::HasAnyFilled: RNTuple mode enabled (separate files), keeping traditional ROOT file with filled histograms/metadata" << QwLog::endl;
+      } else {
+        QwMessage << "QwRootFile::HasAnyFilled: RNTuple mode enabled (same file), keeping ROOT file with RNTuple data and/or histograms/metadata" << QwLog::endl;
+      }
+    } else {
+      QwMessage << "QwRootFile::HasAnyFilled: RNTuple mode enabled, but traditional ROOT file has no filled histograms/metadata - discarding empty file" << QwLog::endl;
+    }
+  } else if (fTreeSeparateFiles) {
+    if (has_filled) {
+      QwMessage << "QwRootFile::HasAnyFilled: Separate tree mode enabled, keeping ROOT file with histograms/metadata" << QwLog::endl;
+    } else {
+      QwMessage << "QwRootFile::HasAnyFilled: Separate tree mode enabled, but ROOT file has no filled histograms/metadata - discarding empty file" << QwLog::endl;
+    }
+  }
+  
+  return has_filled;
 }
 Bool_t QwRootFile::HasAnyFilled(TDirectory* d) {
   if (!d) return false;
@@ -390,7 +511,13 @@ void QwRootFile::NewRNTuple(const std::string& name, const std::string& desc) {
   
   // Create RNTuple file wrapper if needed
   if (!fRNTupleFile) {
-    fRNTupleFile = new QwRNTupleFile(fRunLabel);
+    if (fRNTupleSeparateFiles) {
+      // Create separate file for RNTuples
+      fRNTupleFile = new QwRNTupleFile(fRunLabel);
+    } else {
+      // Use the same file for both histograms and RNTuples
+      fRNTupleFile = new QwRNTupleFile(fRunLabel, fRootFile);
+    }
     fRNTupleFile->ProcessOptions(*fOptions);
   }
   

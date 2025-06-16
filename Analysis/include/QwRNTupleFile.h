@@ -331,6 +331,8 @@ class QwRNTupleFile {
 
     /// \brief Constructor with run label
     QwRNTupleFile(const TString& run_label);
+    /// \brief Constructor with existing TFile (for same-file mode)
+    QwRNTupleFile(const TString& run_label, TFile* existing_file);
     /// \brief Destructor
     virtual ~QwRNTupleFile();
 
@@ -488,24 +490,36 @@ class QwRNTupleFile {
       }
     }
 
+    /// Commit all RNTuple writers (used by QwRootFile for same-file mode)
+    void CommitRNTuples();
+
     void Write() {
-      if (fRootFile) {
-        // Commit all RNTuple writers
-        for (auto& pair : fRNTupleWriters) {
-          if (pair.second) {
-            pair.second->CommitDataset();
-          }
-        }
+      if (fRootFile && fOwnsFile) {
+        // Only commit and write if we own the file (separate files mode)
+        CommitRNTuples();
         fRootFile->Write();
         QwMessage << "RNTuple file written" << QwLog::endl;
+      } else if (fRootFile && !fRNTupleWriters.empty()) {
+        // In shared file mode, just commit the RNTuples but don't write the file
+        // The file writing will be handled by QwRootFile
+        // Only commit if we still have writers (not already committed)
+        CommitRNTuples();
+        QwMessage << "RNTuple data committed to shared file" << QwLog::endl;
       }
     }
 
     void Close() {
-      Write();
-      if (fRootFile) {
+      // Only write if we haven't already committed the writers
+      if (!fRNTupleWriters.empty() || fOwnsFile) {
+        Write();
+      }
+      if (fRootFile && fOwnsFile) {
         fRootFile->Close();
         delete fRootFile;
+        fRootFile = nullptr;
+      } else if (fRootFile) {
+        // For shared files, just clear our pointer but don't close
+        QwMessage << "QwRNTupleFile: Not closing shared ROOT file" << QwLog::endl;
         fRootFile = nullptr;
       }
     }
@@ -534,6 +548,9 @@ class QwRNTupleFile {
 
     /// ROOT file pointer
     TFile* fRootFile;
+    
+    /// File ownership flag (true if we own the file and should close it)
+    Bool_t fOwnsFile;
 
     /// RNTuple containers
     std::map<const std::string, std::vector<QwRNTuple*>> fRNTupleByName;

@@ -1420,6 +1420,9 @@ void QwADC18_Channel::ConstructRNTupleFields(QwRNTuple* rntuple, const TString& 
   // Convert TString to std::string for the RNTuple field names
   std::string base_str = basename.Data();
   
+  // Set up the tree array index BEFORE adding fields to track our starting position
+  fTreeArrayIndex = rntuple->GetVector().size();
+  
   // Add fields matching the TTree structure
   rntuple->AddField<Double_t>(base_str + "_value");
   
@@ -1436,6 +1439,9 @@ void QwADC18_Channel::ConstructRNTupleFields(QwRNTuple* rntuple, const TString& 
     rntuple->AddField<Double_t>(base_str + "_peak");
     rntuple->AddField<Double_t>(base_str + "_base");
   }
+  
+  // Calculate the number of entries that were actually added
+  fTreeArrayNumEntries = rntuple->GetVector().size() - fTreeArrayIndex;
 }
 
 void QwADC18_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleModel> model, std::string& prefix, std::vector<Double_t>& vector, std::vector<std::shared_ptr<Double_t>>& fields)

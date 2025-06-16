@@ -371,7 +371,13 @@ class QwRootFile {
         return;
       }
       
-      this->cd();
+      // Choose the correct file based on tree separation setting
+      if (fTreeSeparateFiles && fTreeFile) {
+        QwMessage << "Creating tree '" << name << "' in separate tree file" << QwLog::endl;
+        fTreeFile->cd();
+      } else {
+        this->cd();
+      }
       QwRootTree *tree = 0;
       if (! HasTreeByName(name)) {
         tree = new QwRootTree(name,desc);
@@ -668,6 +674,15 @@ class QwRootFile {
     /// RNTuple mode flag
     bool fUseRNTuple;
     
+    /// RNTuple separate files mode flag
+    bool fRNTupleSeparateFiles;
+    
+    /// TTree separate files mode flag (when RNTuple is disabled)
+    bool fTreeSeparateFiles;
+    
+    /// Separate tree file pointer (only created when needed)
+    TFile* fTreeFile;
+    
     /// RNTuple file wrapper (only created when needed)
     QwRNTupleFile* fRNTupleFile;
     
@@ -747,8 +762,13 @@ void QwRootFile::ConstructTreeBranches(
   // If the tree does not exist yet, create it
   if (fTreeByName.count(name) == 0) {
 
-    // Go to top level directory
-    this->cd();
+    // Go to appropriate directory - use tree file if separate trees are enabled
+    if (fTreeSeparateFiles && fTreeFile) {
+      fTreeFile->cd();
+      QwMessage << "Creating tree '" << name << "' in separate tree file" << QwLog::endl;
+    } else {
+      this->cd();
+    }
 
     // New tree with name, description, object, prefix
     tree = new QwRootTree(name, desc, object, prefix);
@@ -953,7 +973,13 @@ void QwRootFile::ConstructRNTupleFields(
 
   // Create RNTuple file wrapper if needed
   if (!fRNTupleFile) {
-    fRNTupleFile = new QwRNTupleFile(fRunLabel);
+    if (fRNTupleSeparateFiles) {
+      // Create separate file for RNTuples
+      fRNTupleFile = new QwRNTupleFile(fRunLabel);
+    } else {
+      // Use the same file for both histograms and RNTuples
+      fRNTupleFile = new QwRNTupleFile(fRunLabel, fRootFile);
+    }
     fRNTupleFile->ProcessOptions(*fOptions); // Assume options are available
   }
 

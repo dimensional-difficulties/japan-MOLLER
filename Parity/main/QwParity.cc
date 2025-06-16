@@ -11,6 +11,11 @@
 #include <fstream>
 #include <vector>
 #include <new>
+#include <chrono>
+#include <iomanip>
+#include <ctime>
+#include <sys/stat.h>
+#include <filesystem>
 
 // Boost headers
 #include <boost/shared_ptr.hpp>
@@ -49,10 +54,25 @@
 #include "QwBeamMod.h"
 #include "QwIntegratedRaster.h"
 
+// Helper function to get file size safely
+std::uintmax_t GetFileSize(const std::string& filename) {
+  try {
+    if (std::filesystem::exists(filename)) {
+      return std::filesystem::file_size(filename);
+    }
+  } catch (const std::filesystem::filesystem_error& ex) {
+    // File doesn't exist or can't be accessed
+  }
+  return 0;  // Return 0 if file doesn't exist or can't be accessed
+}
 
 
 Int_t main(Int_t argc, Char_t* argv[])
 {
+  // Record program start time for timing analysis
+  time_t program_start_time = time(nullptr);
+  auto program_start_chrono = std::chrono::high_resolution_clock::now();
+  
   ///  Define the command line options
   DefineOptionsParity(gQwOptions);
 
@@ -100,6 +120,8 @@ Int_t main(Int_t argc, Char_t* argv[])
 
   ///  Start loop over all runs
   Int_t run_number = 0;
+  auto run_start_chrono = std::chrono::high_resolution_clock::now();  // High-precision run start time
+  clock_t run_start_cpu = clock();  // CPU time measurement for run
   while (eventbuffer.OpenNextStream() == CODA_OK) {
 
     ///  Begin processing for the first run
@@ -563,12 +585,72 @@ Int_t main(Int_t argc, Char_t* argv[])
     //  Close event buffer stream
     eventbuffer.CloseStream();
 
+    // Append timing information to file using high-precision timing
+    {
+      // Determine filename based on RNTuple usage
+      std::string filename = gQwOptions.GetValue<bool>("enable-rntuple") ? 
+                             "rntuple_times.dat" : "ttree_times.dat";
+      
+      // Get timing and event information with high precision
+      UInt_t nevents = eventbuffer.GetPhysicsEventNumber();
+      auto run_end_chrono = std::chrono::high_resolution_clock::now();
+      clock_t run_end_cpu = clock();
+      
+      // Calculate elapsed times with microsecond precision for real time, standard precision for CPU time
+      auto duration = std::chrono::duration_cast<std::chrono::microseconds>(run_end_chrono - run_start_chrono);
+      Double_t realtime = duration.count() / 1000000.0;  // Convert to seconds with microsecond precision
+      
+      // Calculate CPU time in seconds (this matches what ROOT's TStopwatch uses)
+      Double_t cputime = static_cast<Double_t>(run_end_cpu - run_start_cpu) / CLOCKS_PER_SEC;
+      
+      // Get file sizes - 4th column depends on mode
+      std::uintmax_t fourth_column_size = 0;
+      std::uintmax_t ttree_size = GetFileSize("isu_sample_4.root");
+      
+      if (gQwOptions.GetValue<bool>("enable-rntuple")) {
+        // RNTuple mode: 4th column is RNTuple file size
+        fourth_column_size = GetFileSize("4_rntuple.root");
+      } else if (gQwOptions.GetValue<bool>("tree-separate-files")) {
+        // Separate tree files mode: 4th column is separate tree file size
+        fourth_column_size = GetFileSize("isu_sample_4_trees.root");
+      } else {
+        // Same file mode: 4th column is 0 (no separate file)
+        fourth_column_size = 0;
+      }
 
+      // Append to file: nevents, cputime, realtime, fourth_column_size, ttree_size (with higher precision)
+      std::ofstream timefile(filename.c_str(), std::ios::app);
+      if (timefile.is_open()) {
+        timefile << std::fixed << std::setprecision(6);  // 6 decimal places
+        timefile << nevents << " " << cputime << " " << realtime;
+        // Add file sizes (in bytes)
+        timefile << " " << fourth_column_size << " " << ttree_size << std::endl;
+        timefile.close();
+      } else {
+        QwError << "Unable to open timing file: " << filename << QwLog::endl;
+      }
+    }
 
     //  Report run summary
     eventbuffer.ReportRunSummary();
     eventbuffer.PrintRunTimes();
   } // end of loop over runs
+
+  // Display enhanced timing information with high precision
+  time_t program_end_time = time(nullptr);
+  auto program_end_chrono = std::chrono::high_resolution_clock::now();
+  
+  // Calculate elapsed time with high precision
+  double elapsed_seconds = difftime(program_end_time, program_start_time);
+  auto program_duration = std::chrono::duration_cast<std::chrono::microseconds>(program_end_chrono - program_start_chrono);
+  double precise_elapsed_seconds = program_duration.count() / 1000000.0;
+  
+  std::cout << std::endl;
+  std::cout << "=== TIMING INFORMATION ===" << std::endl;
+  std::cout << "Program started at: " << ctime(&program_start_time);
+  std::cout << "Program ended at: " << ctime(&program_end_time); 
+  std::cout << "Total elapsed time: " << std::fixed << std::setprecision(6) << precise_elapsed_seconds << " seconds" << std::endl;
+  std::cout << "=========================" << std::endl;
 
   QwMessage << "I have done everything I can do..." << QwLog::endl;
 

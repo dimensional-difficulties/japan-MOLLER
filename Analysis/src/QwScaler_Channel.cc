@@ -845,6 +845,9 @@ void QwScaler_Channel<data_mask,data_shift>::ConstructRNTupleFields(QwRNTuple* r
   
   TString basename = prefix(0, (prefix.First("|") >= 0)? prefix.First("|"): prefix.Length()) + GetElementName();
   
+  // Set up the tree array index BEFORE adding fields to track our starting position
+  fTreeArrayIndex = rntuple->GetVector().size();
+  
   // Add fields matching the TTree structure
   std::string base_str = basename.Data();
   rntuple->AddField<Double_t>(base_str + "_value");
@@ -863,6 +866,9 @@ void QwScaler_Channel<data_mask,data_shift>::ConstructRNTupleFields(QwRNTuple* r
       rntuple->AddField<Double_t>(base_str + "_header");
     }
   }
+  
+  // Calculate the number of entries that were actually added
+  fTreeArrayNumEntries = rntuple->GetVector().size() - fTreeArrayIndex;
 }
 
 template<unsigned int data_mask, unsigned int data_shift>

@@ -7,8 +7,16 @@ std::string QwRNTupleFile::fDefaultRootFileDir = "";
 std::string QwRNTupleFile::fDefaultRootFileStem = "";
 
 QwRNTupleFile::QwRNTupleFile(const TString& run_label)
-: fRootFile(nullptr), fRunLabel(run_label.Data()), fUpdateInterval(0) {
+: fRootFile(nullptr), fOwnsFile(kTRUE), fRunLabel(run_label.Data()), fUpdateInterval(0) {
   // Constructor implementation
+}
+
+QwRNTupleFile::QwRNTupleFile(const TString& run_label, TFile* existing_file)
+: fRootFile(existing_file), fOwnsFile(kFALSE), fRunLabel(run_label.Data()), fUpdateInterval(0) {
+  // Constructor that uses an existing file for same-file storage
+  if (fRootFile) {
+    QwMessage << "QwRNTupleFile: Using existing ROOT file: " << fRootFile->GetName() << QwLog::endl;
+  }
 }
 
 QwRNTupleFile::~QwRNTupleFile() {
@@ -19,9 +27,13 @@ QwRNTupleFile::~QwRNTupleFile() {
     }
   }
   
-  // Close file if still open
-  if (fRootFile) {
+  // Close file only if we own it
+  if (fRootFile && fOwnsFile) {
     Close();
+  } else if (fRootFile) {
+    // For shared files, just clear our pointer but don't close
+    QwMessage << "QwRNTupleFile: Not closing shared ROOT file in destructor" << QwLog::endl;
+    fRootFile = nullptr;
   }
 }
 
@@ -69,25 +81,50 @@ void QwRNTupleFile::ProcessOptions(QwOptions &options) {
     fDefaultRootFileStem = options.GetValue<std::string>("QwRNTupleFile.root-file-stem");
   }
   
-  // Create the ROOT file
-  std::string filename = fDefaultRootFileDir;
-  if (!filename.empty() && filename.back() != '/') {
-    filename += "/";
-  }
-  filename += fDefaultRootFileStem;
-  if (!filename.empty()) {
-    filename += "_";
-  }
-  filename += fRunLabel + "_rntuple.root";
-  
-  fRootFile = TFile::Open(filename.c_str(), "RECREATE");
-  if (!fRootFile || fRootFile->IsZombie()) {
-    QwError << "Failed to create ROOT file: " << filename << QwLog::endl;
-    if (fRootFile) {
-      delete fRootFile;
-      fRootFile = nullptr;
+  // Create the ROOT file only if not provided (separate files mode)
+  if (!fRootFile) {
+    std::string filename = fDefaultRootFileDir;
+    if (!filename.empty() && filename.back() != '/') {
+      filename += "/";
     }
-  } else {
-    QwMessage << "Created RNTuple ROOT file: " << filename << QwLog::endl;
+    filename += fDefaultRootFileStem;
+    if (!filename.empty()) {
+      filename += "_";
+    }
+    filename += fRunLabel + "_rntuple.root";
+    
+    fRootFile = TFile::Open(filename.c_str(), "RECREATE");
+    fOwnsFile = kTRUE; // We created this file, so we own it
+    
+    if (!fRootFile || fRootFile->IsZombie()) {
+      QwError << "Failed to create ROOT file: " << filename << QwLog::endl;
+      if (fRootFile) {
+        delete fRootFile;
+        fRootFile = nullptr;
+      }
+    } else {
+      QwMessage << "Created RNTuple ROOT file: " << filename << QwLog::endl;
+    }
   }
+}
+
+void QwRNTupleFile::CommitRNTuples() {
+  // Commit all RNTuple writers and clear them to avoid double deletion
+  if (fRNTupleWriters.empty()) {
+    QwVerbose << "QwRNTupleFile::CommitRNTuples() - No writers to commit" << QwLog::endl;
+    return;
+  }
+  
+  for (auto& pair : fRNTupleWriters) {
+    if (pair.second) {
+      try {
+        QwVerbose << "Committing RNTuple writer: " << pair.first << QwLog::endl;
+        pair.second->CommitDataset();
+      } catch (const std::exception& e) {
+        QwError << "Exception committing RNTuple " << pair.first << ": " << e.what() << QwLog::endl;
+      }
+    }
+  }
+  // Clear the writers map to prevent further access
+  fRNTupleWriters.clear();
 }

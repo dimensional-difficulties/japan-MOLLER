@@ -876,6 +876,9 @@ void QwMollerADC_Channel::ConstructRNTupleFields(class QwRNTuple *rntuple, const
   TString basename = prefix(0, (prefix.First("|") >= 0)? prefix.First("|"): prefix.Length()) + GetElementName();
   std::string base_str = basename.Data();  // Convert TString to std::string
 
+  // Set up the tree array index BEFORE adding fields to track our starting position
+  fTreeArrayIndex = rntuple->GetVector().size();
+
   bHw_sum =     gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "hw_sum");
   bHw_sum_raw = gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "hw_sum_raw");
   bBlock =     gQwHists.MatchVQWKElementFromList(GetSubsystemName().Data(), GetModuleType().Data(), "block");
@@ -955,6 +958,9 @@ void QwMollerADC_Channel::ConstructRNTupleFields(class QwRNTuple *rntuple, const
       }
     }
   }
+  
+  // Calculate the number of entries that were actually added
+  fTreeArrayNumEntries = rntuple->GetVector().size() - fTreeArrayIndex;
 }
 
 void QwMollerADC_Channel::ConstructRNTupleFields(std::shared_ptr<ROOT::RNTupleModel> model, std::string& prefix, std::vector<Double_t>& vector, std::vector<std::shared_ptr<Double_t>>& fields)

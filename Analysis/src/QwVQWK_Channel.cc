@@ -993,6 +993,9 @@ void QwVQWK_Channel::ConstructRNTupleFields(QwRNTuple* rntuple, const TString& p
     // Decide what to store based on prefix (matching FillTreeVector logic)
     SetDataToSaveByPrefix(prefix);
     
+    // Set up the tree array index BEFORE adding fields to track our starting position
+    fTreeArrayIndex = rntuple->GetVector().size();
+    
     // Add fields to the RNTuple using the AddField method, which properly registers them
     rntuple->AddField<Double_t>(std::string(basename.Data()) + "_hw_sum");
     
@@ -1014,18 +1017,8 @@ void QwVQWK_Channel::ConstructRNTupleFields(QwRNTuple* rntuple, const TString& p
       }
     }
     
-    // Set up the tree array index and number of entries for vector filling
-    fTreeArrayIndex = rntuple->GetVector().size();
-    
-    // Calculate expected number of entries based on what we added
-    fTreeArrayNumEntries = 2; // hw_sum + Device_Error_Code
-    if (fDataToSave == kMoments) {
-      fTreeArrayNumEntries += 2; // hw_sum_m2 + hw_sum_err  
-    }
-    if (fDataToSave == kRaw) {
-      fTreeArrayNumEntries += 3; // hw_sum_raw + sequence_number + num_samples
-      fTreeArrayNumEntries += 2 * fBlocksPerEvent; // block + block_raw for each block
-    }
+    // Calculate the number of entries that were actually added
+    fTreeArrayNumEntries = rntuple->GetVector().size() - fTreeArrayIndex;
     
     QwVerbose << "QwVQWK_Channel::ConstructRNTupleFields: " << basename 
               << " fTreeArrayIndex=" << fTreeArrayIndex 
