@@ -50,6 +50,10 @@ OnlineGUI::OnlineGUI(OnlineConfig& config, Bool_t printonly=0, int ver=0):
   // Constructor.  Get the config pointer, and make the GUI.
 
   fConfig = &config;
+  
+  // Disable ROOT's implicit multithreading for RDataFrame to avoid GUI conflicts
+  ROOT::EnableImplicitMT(1); // Use only 1 thread for safety in GUI context
+  
   int bin2Dx(0), bin2Dy(0);
   fConfig->Get2DnumberBins(bin2Dx,bin2Dy);    
   if(bin2Dx>0 && bin2Dy>0){
@@ -512,8 +516,9 @@ void OnlineGUI::GetFileObjects()
 
 void OnlineGUI::GetTreeVars() 
 {
-  // Utility to find all of the variables (leaf's/branches) within a
-  // Specified TTree and put them within the treeVars vector.
+  // Utility to find all of the variables (leaf's/branches) within 
+  // TTrees and put them within the treeVars vector.
+  // NOTE: RNTuple variables are handled by GetRNTupleVars() called from GetRNTuples()
   treeVars.clear();
   TObjArray *branchList;
   vector <TString> currentTree;
@@ -544,7 +549,7 @@ void OnlineGUI::GetTreeVars()
 
 
 void OnlineGUI::GetRootTree() {
-  // Utility to search a ROOT File for ROOT Trees
+  // Utility to search a ROOT File for ROOT Trees and RNTuples
   // Fills the fRootTree vector
   fRootTree.clear();
 
@@ -572,6 +577,9 @@ void OnlineGUI::GetRootTree() {
   for(UInt_t i=0;i<fRootTree.size();i++) {
     fTreeEntries.push_back(0);
   }
+  
+  // NEW: Also get RNTuples
+  GetRNTuples();
   
 }
 
@@ -619,28 +627,46 @@ UInt_t OnlineGUI::GetTreeIndex(TString var) {
 	<<"\t looking for variable: "<<var<<endl;
   for(UInt_t iTree=0; iTree<treeVars.size(); iTree++) {
     for(UInt_t ivar=0; ivar<treeVars[iTree].size(); ivar++) {
-      if(fVerbosity>=4)
-	cout<<"Checking tree "<<iTree<<" name:"<<fRootTree[iTree]->GetName()
-	    <<" \t var "<<ivar<<" >> "<<treeVars[iTree][ivar]<<endl;
+      if(fVerbosity>=4) {
+        if(iTree < fRootTree.size()) {
+          cout<<"Checking TTree "<<iTree<<" name:"<<fRootTree[iTree]->GetName()
+              <<" \t var "<<ivar<<" >> "<<treeVars[iTree][ivar]<<endl;
+        } else {
+          UInt_t rntuple_idx = iTree - fRootTree.size();
+          if(rntuple_idx < fRNTupleNames.size()) {
+            cout<<"Checking RNTuple "<<rntuple_idx<<" name:"<<fRNTupleNames[rntuple_idx]
+                <<" \t var "<<ivar<<" >> "<<treeVars[iTree][ivar]<<endl;
+          }
+        }
+      }
       if(var == treeVars[iTree][ivar]) return iTree;
     }
   }
 
-  return fRootTree.size()+1;
+  return fRootTree.size() + fRNTupleNames.size() + 1;
 }
 
 UInt_t OnlineGUI::GetTreeIndexFromName(TString name) {
-  // Called by TreeDraw().  Tries to find the Tree index provided the
+  // Called by TreeDraw().  Tries to find the Tree/RNTuple index provided the
   //  name.  If it doesn't match up, return a number that's one larger
-  //  than the number of found trees.
+  //  than the total number of found trees and RNTuples.
+  
+  // First check TTrees
   for(UInt_t iTree=0; iTree<fRootTree.size(); iTree++) {
     TString treename = fRootTree[iTree]->GetName();
     if(name == treename) {
       return iTree;
     }
   }
+  
+  // Then check RNTuples (offset by number of TTrees)
+  for(UInt_t iRNTuple=0; iRNTuple<fRNTupleNames.size(); iRNTuple++) {
+    if(name == fRNTupleNames[iRNTuple]) {
+      return fRootTree.size() + iRNTuple;
+    }
+  }
 
-  return fRootTree.size()+1;
+  return fRootTree.size() + fRNTupleNames.size() + 1;
 }
 
 void OnlineGUI::MacroDraw(vector <TString> command) {
@@ -996,13 +1022,14 @@ void OnlineGUI::TreeDraw(vector <TString> command) {
   if(fVerbosity>=3)
     cout<<"\tDraw option:"<<drawopt<<" and histo name "<<histoname<<endl;
   Int_t errcode=0;
-  if (iTree <= fRootTree.size() ) {
+  if (iTree < fRootTree.size()) {
+    // Handle TTree drawing
     if(fVerbosity>=1){
       cout<<__PRETTY_FUNCTION__<<"\t"<<__LINE__<<endl;
       cout<<command[0]<<"\t"<<command[1]<<"\t"<<command[2]<<"\t"<<command[3]
 	  <<"\t"<<command[4]<<endl;
       if(fVerbosity>=2)
-	cout<<"\tProcessing from tree: "<<iTree<<"\t"<<fRootTree[iTree]->GetTitle()<<"\t"
+	cout<<"\tProcessing from TTree: "<<iTree<<"\t"<<fRootTree[iTree]->GetTitle()<<"\t"
 	    <<fRootTree[iTree]->GetName()<<endl;
     }
     errcode = fRootTree[iTree]->Draw(var,cut,drawopt);
@@ -1034,16 +1061,261 @@ void OnlineGUI::TreeDraw(vector <TString> command) {
     } else {
       BadDraw("Empty Histogram");
     }
+  } else if (iTree < fRootTree.size() + fRNTupleNames.size()) {
+    // Handle RNTuple drawing via RDataFrame
+    UInt_t rntuple_idx = iTree - fRootTree.size();
+    
+    if(fVerbosity>=1){
+      cout<<__PRETTY_FUNCTION__<<"\t"<<__LINE__<<endl;
+      cout<<command[0]<<"\t"<<command[1]<<"\t"<<command[2]<<"\t"<<command[3]
+	  <<"\t"<<command[4]<<endl;
+      if(fVerbosity>=2)
+	cout<<"\tProcessing from RNTuple: "<<rntuple_idx<<"\t"<<fRNTupleNames[rntuple_idx]<<endl;
+    }
+    
+    try {
+      // Create RDataFrame on-demand with proper error checking
+      TString filename = fRootFile->GetName();
+      TString rntuple_name = fRNTupleNames[rntuple_idx];
+      
+      if(fVerbosity>=2) {
+        cout << "Creating RDataFrame from RNTuple: " << rntuple_name << " in file: " << filename << endl;
+      }
+      
+      // Check if the file and RNTuple still exist
+      if (!fRootFile || !fRootFile->IsOpen()) {
+        throw std::runtime_error("ROOT file is not open");
+      }
+      
+      // Create RDataFrame in a safe way
+      ROOT::RDataFrame df(rntuple_name.Data(), filename.Data());
+      
+      // Get entries count for validation
+      auto nEntries = df.Count();
+      auto entryCount = nEntries.GetValue();
+      
+      if(fVerbosity>=2) {
+        cout << "RDataFrame created successfully with " << entryCount << " entries" << endl;
+      }
+      
+      if (entryCount == 0) {
+        BadDraw("Empty RNTuple: " + rntuple_name);
+        return;
+      }
+      
+      // Create histogram based on draw option and apply cuts
+      TH1* result_hist = nullptr;
+      
+      if(drawopt.Contains("prof")) {
+        // Profile histogram for 2D variables
+        if(var.Contains(":")) {
+          vector<TString> vars = fConfig->SplitString(var, ":");
+          if(vars.size() >= 2) {
+            ROOT::RDF::RResultPtr<TProfile> hist;
+            if(tempCut.Length() > 0) {
+              hist = df.Filter(tempCut.Data()).Profile1D({histoname.Data(), command[3].Data(), 100, 0.0, 0.0}, 
+                                              vars[1].Data(), vars[0].Data());
+            } else {
+              hist = df.Profile1D({histoname.Data(), command[3].Data(), 100, 0.0, 0.0}, 
+                                 vars[1].Data(), vars[0].Data());
+            }
+            result_hist = (TH1*)hist->DrawClone(drawopt.Data());
+            errcode = 1; // Success
+          }
+        }
+      } else if(var.Contains(":")) {
+        // 2D histogram
+        vector<TString> vars = fConfig->SplitString(var, ":");
+        if(vars.size() >= 2) {
+          ROOT::RDF::RResultPtr<TH2D> hist;
+          if(tempCut.Length() > 0) {
+            hist = df.Filter(tempCut.Data()).Histo2D({histoname.Data(), command[3].Data(), 100, 0.0, 0.0, 100, 0.0, 0.0}, 
+                                          vars[1].Data(), vars[0].Data());
+          } else {
+            hist = df.Histo2D({histoname.Data(), command[3].Data(), 100, 0.0, 0.0, 100, 0.0, 0.0}, 
+                             vars[1].Data(), vars[0].Data());
+          }
+          result_hist = (TH1*)hist->DrawClone(drawopt.Data());
+          errcode = 1; // Success
+        }
+      } else {
+        // 1D histogram
+        ROOT::RDF::RResultPtr<TH1D> hist;
+        if(tempCut.Length() > 0) {
+          hist = df.Filter(tempCut.Data()).Histo1D({histoname.Data(), command[3].Data(), 100, 0.0, 0.0}, var.Data());
+          if(fVerbosity>=2)
+            cout << "\tApplied RDataFrame filter: " << tempCut << endl;
+        } else {
+          hist = df.Histo1D({histoname.Data(), command[3].Data(), 100, 0.0, 0.0}, var.Data());
+        }
+        result_hist = (TH1*)hist->DrawClone(drawopt.Data());
+        errcode = 1; // Success
+      }
+      
+      if (command[5].EqualTo("grid")){
+        gPad->SetGrid();
+      }
+      
+      if(fVerbosity>=3)
+        cout<<"Finished RDataFrame drawing with error code "<<errcode<<endl;
+        
+    } catch (const std::exception& e) {
+      cout << "ERROR: RDataFrame drawing failed: " << e.what() << endl;
+      BadDraw("RNTuple drawing error: " + TString(e.what()));
+      errcode = -1;
+    } catch (...) {
+      cout << "ERROR: Unknown exception in RDataFrame drawing" << endl;
+      BadDraw("Unknown RNTuple drawing error");
+      errcode = -1;
+    }
   } else {
     BadDraw(var+" not found");
     if (fConfig->IsMonitor()){
       // Maybe we missed it... look again.  I dont like the code
       // below... maybe I can come up with something better
       GetFileObjects();
-      GetRootTree();
+      GetRootTree();  // This now also calls GetRNTuples()
       GetTreeVars();
     }
   }
+}
+
+void OnlineGUI::GetRNTuples() {
+  // Utility to search a ROOT File for RNTuples and store their names
+  // RDataFrames will be created on-demand during plotting
+  fRNTupleNames.clear();
+
+  if(fVerbosity>=1)
+    cout << "Searching for RNTuples in file..." << endl;
+
+  list <TString> found;
+  for(UInt_t i=0; i<fileObjects.size(); i++) {
+    
+    if(fVerbosity>=2)
+      cout << "Object = " << fileObjects[i].second <<
+	"     Name = " << fileObjects[i].first << endl;
+
+    if(fileObjects[i].second.Contains("ROOT::RNTuple"))
+      found.push_back(fileObjects[i].first);
+  }
+
+  // Remove duplicates, then create RDataFrames from RNTuples
+  found.unique();
+  UInt_t nRNTuples = found.size();
+
+  if(fVerbosity>=1)
+    cout << "Found " << nRNTuples << " RNTuples" << endl;
+
+  TString filename = fRootFile->GetName();
+  
+  for(UInt_t i=0; i<nRNTuples; i++) {
+    TString rntuple_name = found.front();
+    found.pop_front();
+    
+    try {
+      if(fVerbosity>=1)
+        cout << "Opening RNTuple: " << rntuple_name << endl;
+        
+      // Create RNTuple reader - but don't store it yet, just test access
+      auto test_reader = ROOT::RNTupleReader::Open(rntuple_name.Data(), filename.Data());
+      
+      if(fVerbosity>=1)
+        cout << "Successfully opened RNTuple: " << rntuple_name << " with " 
+             << test_reader->GetNEntries() << " entries" << endl;
+      
+      // Only store the name for now - we'll create readers on demand
+      fRNTupleNames.push_back(rntuple_name);
+             
+    } catch (const std::exception& e) {
+      cout << "ERROR: Failed to open RNTuple " << rntuple_name << ": " << e.what() << endl;
+    }
+  }
+  
+  // Get variable names from RNTuples
+  GetRNTupleVars();
+}
+
+void OnlineGUI::GetRNTupleVars() {
+  // Extract variable names from RNTuples and add them to treeVars
+  // This allows RNTuple variables to be used just like TTree variables
+  
+  if(fVerbosity>=1)
+    cout << "Extracting variables from " << fRNTupleNames.size() << " RNTuples" << endl;
+
+  TString filename = fRootFile->GetName();
+
+  for(UInt_t i=0; i<fRNTupleNames.size(); i++) {
+    vector<TString> vars;
+    
+    try {
+      TString rntuple_name = fRNTupleNames[i];
+      
+      if(fVerbosity>=2)
+        cout << "RNTuple " << rntuple_name << " fields:" << endl;
+      
+      // Create a temporary RDataFrame just to get column names
+      auto temp_df = ROOT::RDF::FromRNTuple(rntuple_name.Data(), filename.Data());
+      auto columnNames = temp_df.GetColumnNames();
+      
+      for (const auto& columnName : columnNames) {
+        TString fieldName = columnName;
+        vars.push_back(fieldName);
+        
+        if(fVerbosity>=2)
+          cout << "  " << fieldName << endl;
+      }
+      
+      // Add to treeVars so they can be found by existing variable search methods
+      treeVars.push_back(vars);
+      
+      if(fVerbosity>=1)
+        cout << "RNTuple " << rntuple_name << " has " << vars.size() << " variables" << endl;
+        
+    } catch (const std::exception& e) {
+      cout << "ERROR: Failed to get variables from RNTuple " << fRNTupleNames[i] << ": " << e.what() << endl;
+      // Add empty vector to keep indices aligned
+      treeVars.push_back(vector<TString>());
+    }
+  }
+}
+
+UInt_t OnlineGUI::GetRNTupleIndex(TString var) {
+  // Find which RNTuple has the specified variable
+  // Returns the correct index offset by the number of TTrees
+  // If not found, returns a large number
+  
+  if(fVerbosity>=3)
+    cout << "Looking for RNTuple variable: " << var << endl;
+    
+  UInt_t treeOffset = fRootTree.size();
+  
+  for(UInt_t iRNTuple=0; iRNTuple<fRNTupleNames.size(); iRNTuple++) {
+    UInt_t treeVarIndex = treeOffset + iRNTuple;
+    
+    if(treeVarIndex < treeVars.size()) {
+      for(UInt_t ivar=0; ivar<treeVars[treeVarIndex].size(); ivar++) {
+        if(fVerbosity>=4)
+          cout << "Checking RNTuple " << iRNTuple << " name:" << fRNTupleNames[iRNTuple]
+               << " \t var " << ivar << " >> " << treeVars[treeVarIndex][ivar] << endl;
+        if(var == treeVars[treeVarIndex][ivar]) return treeVarIndex;
+      }
+    }
+  }
+
+  return fRootTree.size() + fRNTupleNames.size() + 1;
+}
+
+UInt_t OnlineGUI::GetRNTupleIndexFromName(TString name) {
+  // Find RNTuple index by name, offset by number of TTrees
+  UInt_t treeOffset = fRootTree.size();
+  
+  for(UInt_t iRNTuple=0; iRNTuple<fRNTupleNames.size(); iRNTuple++) {
+    if(name == fRNTupleNames[iRNTuple]) {
+      return treeOffset + iRNTuple;
+    }
+  }
+
+  return fRootTree.size() + fRNTupleNames.size() + 1;
 }
 
 void OnlineGUI::PrintToFile()

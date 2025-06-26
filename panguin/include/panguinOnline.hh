@@ -22,6 +22,11 @@
 #include "TH3.h"
 #include "panguinOnlineConfig.hh"
 
+// RNTuple support
+#include <ROOT/RNTuple.hxx>
+#include <ROOT/RNTupleReader.hxx>
+#include <ROOT/RDataFrame.hxx>
+
 #define UPDATETIME 10000
 
 class OnlineGUI {
@@ -52,6 +57,10 @@ private:
   Bool_t                            doGolden;
   std::vector <TTree*>                   fRootTree;
   std::vector <Int_t>                    fTreeEntries;
+  
+  // RNTuple support - store only names, create RDataFrames on-demand
+  std::vector <TString>                              fRNTupleNames;
+  
   std::vector < std::pair <TString,TString> > fileObjects;
   std::vector < std::vector <TString> >       treeVars;
   UInt_t                            runNumber;
@@ -83,8 +92,12 @@ public:
   void GetFileObjects();
   void GetTreeVars();
   void GetRootTree();
+  void GetRNTuples();        // NEW: Find RNTuples in file
+  void GetRNTupleVars();     // NEW: Extract variable names from RNTuples
   UInt_t GetTreeIndex(TString);
   UInt_t GetTreeIndexFromName(TString);
+  UInt_t GetRNTupleIndex(TString);        // NEW: Find RNTuple index
+  UInt_t GetRNTupleIndexFromName(TString); // NEW: Find RNTuple by name
   void TreeDraw(std::vector <TString>); 
   void HistDraw(std::vector <TString>);
   void MacroDraw(std::vector <TString>);
