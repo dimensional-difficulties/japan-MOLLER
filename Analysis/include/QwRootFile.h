@@ -328,6 +328,10 @@ class QwRootNTuple {
       // Associate fields with vector - similar to ConstructBranchAndVector but for RNTuple
       TString prefix = Form("%s", fPrefix.c_str());
       object.ConstructNTupleAndVector(fModel, prefix, fVector, fFieldPtrs);
+      QwMessage << fVector.size() << " " << fFieldPtrs.size() << QwLog::endl;
+      for (size_t i = 0 ; i < fVector.size(); i ++) {
+        fFieldPtrs.at(i) = &(fVector.at(i));
+      }
       
       // Store the type of object
       fType = typeid(object).name();
