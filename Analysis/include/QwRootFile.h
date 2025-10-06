@@ -18,6 +18,7 @@ using std::type_info;
 #include "ROOT/RNTupleModel.hxx"
 #include "ROOT/RField.hxx"
 #include "ROOT/RNTupleWriter.hxx"
+#include "QwPerDetectorRNTuples.h"
 #endif
 
 // Qweak headers
@@ -281,6 +282,10 @@ class QwRootTree {
 };
 
 #ifdef HAS_RNTUPLE_SUPPORT
+
+// Include the tracked RNTuple model wrapper
+#include "QwTrackedRNTupleModel.h"
+
 /**
  *  \class QwRootNTuple
  *  \ingroup QwAnalysis
@@ -296,18 +301,22 @@ class QwRootNTuple {
     /// Constructor with name and description
     QwRootNTuple(const std::string& name, const std::string& desc, const std::string& prefix = "")
     : fName(name), fDesc(desc), fPrefix(prefix), fType("type undefined"),
-      fCurrentEvent(0), fNumEventsCycle(0), fNumEventsToSave(0), fNumEventsToSkip(0) {
-      // Create RNTuple model
-      fModel = ROOT::RNTupleModel::Create();
+      fCurrentEvent(0), fNumEventsCycle(0), fNumEventsToSave(0), fNumEventsToSkip(0),
+      fClusterSize(25000), fEventsInCurrentCluster(0), fEnableBatching(kTRUE),
+      fUsePerDetectorMode(kFALSE), fPerDetectorManager(nullptr) {
+      // Create tracked RNTuple model
+      fTrackedModel = new QwTrackedRNTupleModel();
     }
 
     /// Constructor with name, description, and object
     template < class T >
     QwRootNTuple(const std::string& name, const std::string& desc, T& object, const std::string& prefix = "")
     : fName(name), fDesc(desc), fPrefix(prefix), fType("type undefined"),
-      fCurrentEvent(0), fNumEventsCycle(0), fNumEventsToSave(0), fNumEventsToSkip(0) {
-      // Create RNTuple model
-      fModel = ROOT::RNTupleModel::Create();
+      fCurrentEvent(0), fNumEventsCycle(0), fNumEventsToSave(0), fNumEventsToSkip(0),
+      fClusterSize(25000), fEventsInCurrentCluster(0), fEnableBatching(kTRUE),
+      fUsePerDetectorMode(kFALSE), fPerDetectorManager(nullptr) {
+      // Create tracked RNTuple model
+      fTrackedModel = new QwTrackedRNTupleModel();
       
       // Construct fields and vector
       ConstructFieldsAndVector(object);
@@ -316,15 +325,40 @@ class QwRootNTuple {
     /// Destructor
     virtual ~QwRootNTuple() { 
       Close();
+      if (fTrackedModel) {
+        delete fTrackedModel;
+        fTrackedModel = nullptr;
+      }
     }
 
     /// Close and finalize the RNTuple writer
     void Close() {
-      if (fWriter) {
+      QwMessage << "QwRootNTuple::Close: Closing RNTuple '" << fName << "'" << QwLog::endl;
+      
+      if (fUsePerDetectorMode && fPerDetectorManager) {
+        QwMessage << "QwRootNTuple::Close: Closing per-detector manager for '" << fName << "'" << QwLog::endl;
+        fPerDetectorManager->Close();
+        QwMessage << "QwRootNTuple::Close: Deleting per-detector manager for '" << fName << "'" << QwLog::endl;
+        delete fPerDetectorManager;
+        fPerDetectorManager = nullptr;
+        QwMessage << "QwRootNTuple::Close: Finished closing per-detector mode for '" << fName << "'" << QwLog::endl;
+      } else if (fWriter) {
+        QwMessage << "QwRootNTuple::Close: Closing monolithic writer for '" << fName << "'" << QwLog::endl;
+        // Commit any remaining events in the current cluster
+        if (fEnableBatching && fEventsInCurrentCluster > 0) {
+          fWriter->CommitCluster();
+          QwMessage << "Final CommitCluster called for " << fName 
+                   << " with " << fEventsInCurrentCluster << " remaining events" << QwLog::endl;
+        }
+        
         // Explicitly commit any remaining data and close the writer
         // This ensures all data is written to the file before destruction
+        QwMessage << "QwRootNTuple::Close: Resetting writer for '" << fName << "'" << QwLog::endl;
         fWriter.reset();  // This calls the destructor which should finalize the RNTuple
+        QwMessage << "QwRootNTuple::Close: Finished closing monolithic mode for '" << fName << "'" << QwLog::endl;
       }
+      
+      QwMessage << "QwRootNTuple::Close: Successfully closed '" << fName << "'" << QwLog::endl;
     }
 
   private:
@@ -335,9 +369,10 @@ class QwRootNTuple {
       // Reserve space for the field vector
       fVector.reserve(BRANCH_VECTOR_MAX_SIZE);
       
-      // Associate fields with vector - now using shared field pointers
+      // Associate fields with vector - using shared field pointers
+      // Pass the tracked model directly so MakeField calls are intercepted
       TString prefix = Form("%s", fPrefix.c_str());
-      object.ConstructNTupleAndVector(fModel, prefix, fVector, fFieldPtrs);
+      object.ConstructNTupleAndVector(*fTrackedModel, prefix, fVector, fFieldPtrs);
       
       // Store the type of object
       fType = typeid(object).name();
@@ -349,14 +384,42 @@ class QwRootNTuple {
                 << QwLog::endl;
         exit(-1);
       }
+      
+      QwMessage << "RNTuple '" << fName << "' configured with " << fVector.size() 
+               << " fields (field names " << (fUsePerDetectorMode ? "tracked" : "not tracked") 
+               << "), cluster size " << fClusterSize << QwLog::endl;
+      
+      // In per-detector mode, verify field names match field pointers
+      if (fUsePerDetectorMode) {
+        const auto& field_names = fTrackedModel->GetFieldNames();
+        if (field_names.size() != fFieldPtrs.size()) {
+          QwWarning << "Field name count (" << field_names.size() 
+                   << ") doesn't match field pointer count (" << fFieldPtrs.size() << ")" << QwLog::endl;
+        } else {
+          QwMessage << "Successfully tracked " << field_names.size() << " field names" << QwLog::endl;
+        }
+      }
     }
 
   public:
 
     /// Initialize the RNTuple writer with a file
     void InitializeWriter(TFile* file) {
-      if (!fModel) {
-        QwError << "RNTuple model not created for " << fName << QwLog::endl;
+      if (fUsePerDetectorMode) {
+        // Per-detector mode: create separate RNTuples for each detector
+        InitializePerDetectorWriters(file);
+      } else {
+        // Monolithic mode: create one large RNTuple
+        InitializeMonolithicWriter(file);
+      }
+    }
+    
+  private:
+  
+    /// Initialize monolithic (single large) RNTuple writer
+    void InitializeMonolithicWriter(TFile* file) {
+      if (!fTrackedModel) {
+        QwError << "RNTuple tracked model not created for " << fName << QwLog::endl;
         return;
       }
       
@@ -367,16 +430,78 @@ class QwRootNTuple {
       }
       
       try {
-        // Create the writer with the model (transfers ownership)
-        // Use Append to add RNTuple to existing TFile
-        fWriter = ROOT::RNTupleWriter::Append(std::move(fModel), fName, *file);
+        // Release the model from tracked wrapper and move to writer
+        auto model = fTrackedModel->ReleaseModel();
+        fWriter = ROOT::RNTupleWriter::Append(std::move(model), fName, *file);
         
-        QwMessage << "Created RNTuple '" << fName << "' in file " << file->GetName() << QwLog::endl;
+        QwMessage << "Created monolithic RNTuple '" << fName << "' with " 
+                 << fVector.size() << " fields in file " << file->GetName() << QwLog::endl;
         
       } catch (const std::exception& e) {
         QwError << "Failed to create RNTuple writer for '" << fName << "': " << e.what() << QwLog::endl;
       }
     }
+    
+    /// Initialize per-detector RNTuple writers  
+    void InitializePerDetectorWriters(TFile* file) {
+      if (fVector.empty() || fFieldPtrs.empty()) {
+        QwError << "No fields defined for per-detector RNTuples for " << fName << QwLog::endl;
+        return;
+      }
+      
+      if (!fTrackedModel) {
+        QwError << "RNTuple tracked model not created for " << fName << QwLog::endl;
+        return;
+      }
+      
+      // Get field names from tracked model
+      const auto& field_names = fTrackedModel->GetFieldNames();
+      
+      if (field_names.empty()) {
+        QwWarning << "No field names tracked during model construction for " << fName << QwLog::endl;
+        QwWarning << "Falling back to monolithic RNTuple mode" << QwLog::endl;
+        fUsePerDetectorMode = kFALSE;
+        InitializeMonolithicWriter(file);
+        return;
+      }
+      
+      if (field_names.size() != fFieldPtrs.size()) {
+        QwWarning << "Field name count (" << field_names.size() 
+                 << ") doesn't match field pointer count (" << fFieldPtrs.size() << ")" << QwLog::endl;
+        QwWarning << "Falling back to monolithic RNTuple mode" << QwLog::endl;
+        fUsePerDetectorMode = kFALSE;
+        InitializeMonolithicWriter(file);
+        return;
+      }
+      
+      try {
+        // Set cluster size first
+        fPerDetectorManager->SetClusterSize(fClusterSize);
+        
+        // Initialize the per-detector manager
+        fPerDetectorManager->Initialize(file);
+        
+        // Group fields by detector using the static helper
+        auto detector_groups = QwPerDetectorRNTuples::GroupFieldsByDetector(field_names);
+        
+        // Register each detector with its fields
+        for (const auto& detector_entry : detector_groups) {
+          fPerDetectorManager->RegisterDetector(detector_entry.first, detector_entry.second);
+        }
+        
+        QwMessage << "Initialized per-detector RNTuples for '" << fName 
+                 << "' with " << fPerDetectorManager->GetNumDetectors() 
+                 << " detectors" << QwLog::endl;
+        
+      } catch (const std::exception& e) {
+        QwError << "Failed to initialize per-detector RNTuples: " << e.what() << QwLog::endl;
+        QwWarning << "Falling back to monolithic RNTuple mode" << QwLog::endl;
+        fUsePerDetectorMode = kFALSE;
+        InitializeMonolithicWriter(file);
+      }
+    }
+    
+  public:
 
     /// Fill the fields for generic objects
     template < class T >
@@ -385,23 +510,12 @@ class QwRootNTuple {
         // Fill the field vector
         object.FillNTupleVector(fVector);
         
-        // Use the shared field pointers which remain valid
-        if (fWriter) {
-          for (size_t i = 0; i < fVector.size() && i < fFieldPtrs.size(); ++i) {
-            if (fFieldPtrs[i]) {
-              *(fFieldPtrs[i]) = fVector[i];
-            }
-          }
-          
-          // CRITICAL: Actually commit the data to the RNTuple
-          fWriter->Fill();
-          
-          // Update event counter
-          fCurrentEvent++;
-          // RNTuple prescaling
-          if (fNumEventsCycle > 0) {
-            fCurrentEvent %= fNumEventsCycle;
-          }
+        if (fUsePerDetectorMode && fPerDetectorManager) {
+          // Per-detector mode: fill each detector's RNTuple separately
+          FillPerDetectorRNTuples();
+        } else if (fWriter) {
+          // Monolithic mode: fill single large RNTuple
+          FillMonolithicRNTuple();
         } else {
           QwError << "RNTuple writer not initialized for " << fName << QwLog::endl;
         }
@@ -411,12 +525,119 @@ class QwRootNTuple {
         exit(-1);
       }
     }
+    
+    /// Fill monolithic RNTuple
+    void FillMonolithicRNTuple() {
+      // PERFORMANCE OPTIMIZED: Streamlined field copying with safety check
+      // Optimized loop with essential null pointer protection
+      const size_t size = std::min(fVector.size(), fFieldPtrs.size());
+      for (size_t i = 0; i < size; ++i) {
+        if (fFieldPtrs[i]) {  // Essential safety check - prevent segfault
+          *(fFieldPtrs[i]) = fVector[i];
+        }
+      }
+      
+      // OPTIMIZED: Use batching instead of individual Fill()
+      if (fEnableBatching) {
+        // Accumulate data in memory and commit in clusters
+        fWriter->Fill();
+        fEventsInCurrentCluster++;
+        
+        // Commit cluster when we reach the cluster size
+        if (fEventsInCurrentCluster >= fClusterSize) {
+          fWriter->CommitCluster();
+          fEventsInCurrentCluster = 0;
+          
+          if (gQwOptions.GetValue<bool>("debug")) {
+            QwMessage << "CommitCluster called for " << fName 
+                     << " after " << fClusterSize << " events" << QwLog::endl;
+          }
+        }
+      } else {
+        // Fall back to individual fills (less efficient)
+        fWriter->Fill();
+      }
+      
+      // Update event counter
+      fCurrentEvent++;
+      // RNTuple prescaling
+      if (fNumEventsCycle > 0) {
+        fCurrentEvent %= fNumEventsCycle;
+      }
+    }
+    
+    /// Fill per-detector RNTuples
+    void FillPerDetectorRNTuples() {
+      // For each detector, extract its values and fill its RNTuple
+      for (const auto& pair : fDetectorFieldIndices) {
+        const std::string& detector = pair.first;
+        const std::vector<size_t>& indices = pair.second;
+        
+        // Extract values for this detector
+        std::vector<Double_t> detector_values;
+        detector_values.reserve(indices.size());
+        
+        for (size_t idx : indices) {
+          if (idx < fVector.size()) {
+            detector_values.push_back(fVector[idx]);
+          }
+        }
+        
+        // Fill this detector's RNTuple
+        fPerDetectorManager->FillDetector(detector, detector_values);
+      }
+      
+      // Commit clusters for all detectors
+      fPerDetectorManager->CommitAllClusters();
+      
+      // Update event counter
+      fCurrentEvent++;
+      if (fNumEventsCycle > 0) {
+        fCurrentEvent %= fNumEventsCycle;
+      }
+    }
 
     /// Fill the RNTuple (called by FillTree wrapper methods)
     void Fill() {
       // This method is now called indirectly - the actual filling happens in FillNTupleFields
       // Just here for compatibility with the tree interface
     }
+
+    /// Set cluster size for CommitCluster batching (default 25000)
+    void SetClusterSize(UInt_t cluster_size = 25000) {
+      fClusterSize = cluster_size;
+      QwMessage << "RNTuple '" << fName << "' cluster size set to " << cluster_size << " events" << QwLog::endl;
+    }
+    
+    /// Enable or disable batching (default enabled)
+    void SetBatching(Bool_t enable_batching = kTRUE) {
+      fEnableBatching = enable_batching;
+      if (enable_batching) {
+        QwMessage << "RNTuple '" << fName << "' batching enabled with cluster size " << fClusterSize << QwLog::endl;
+      } else {
+        QwMessage << "RNTuple '" << fName << "' batching disabled (less efficient)" << QwLog::endl;
+      }
+    }
+    
+    /// Get current cluster size
+    UInt_t GetClusterSize() const { return fClusterSize; }
+    
+    /// Get batching status
+    Bool_t GetBatchingEnabled() const { return fEnableBatching; }
+    
+    /// Get access to the writer for coordinated operations
+    ROOT::RNTupleWriter* GetWriter() const { return fWriter.get(); }
+    
+    /// Enable per-detector mode (must be called before InitializeWriter)
+    void EnablePerDetectorMode(Bool_t enable = kTRUE) { 
+      fUsePerDetectorMode = enable;
+      if (enable && !fPerDetectorManager) {
+        fPerDetectorManager = new QwPerDetectorRNTuples(fName, fDesc);
+      }
+    }
+    
+    /// Check if using per-detector mode
+    Bool_t IsPerDetectorMode() const { return fUsePerDetectorMode; }
 
     /// Get the name of the RNTuple
     const std::string& GetName() const { return fName; }
@@ -444,8 +665,8 @@ class QwRootNTuple {
 
   private:
 
-    /// RNTuple model and writer
-    std::unique_ptr<ROOT::RNTupleModel> fModel;
+    /// RNTuple tracked model (tracks field names) and writer
+    QwTrackedRNTupleModel* fTrackedModel;
     std::unique_ptr<ROOT::RNTupleWriter> fWriter;
     
     /// Vector of values and shared field pointers (for RNTuple)
@@ -465,6 +686,16 @@ class QwRootNTuple {
     UInt_t fNumEventsCycle;
     UInt_t fNumEventsToSave;
     UInt_t fNumEventsToSkip;
+    
+    /// RNTuple performance parameters
+    UInt_t fClusterSize;           // Events per cluster (default 5000)
+    UInt_t fEventsInCurrentCluster; // Counter for current cluster
+    Bool_t fEnableBatching;        // Enable CommitCluster batching
+    
+    /// Per-detector mode
+    Bool_t fUsePerDetectorMode;    // Use per-detector RNTuples instead of monolithic
+    QwPerDetectorRNTuples* fPerDetectorManager; // Manager for per-detector RNTuples
+    std::map<std::string, std::vector<size_t>> fDetectorFieldIndices; // Map detector to field indices
 
   friend class QwRootFile;
 };
@@ -605,6 +836,9 @@ class QwRootFile {
         ntuple = new QwRootNTuple(name, desc);
         // Initialize the writer with our file
         ntuple->InitializeWriter(fRootFile);
+        // Apply performance settings to all RNtuples
+        ntuple->SetClusterSize(fRNTupleClusterSize);
+        ntuple->SetBatching(!fDisableRNTupleBatching);
       } else {
         // For simplicity, don't support copying existing RNTuples yet
         QwError << "Cannot create duplicate RNTuple: " << name << QwLog::endl;
@@ -653,6 +887,36 @@ class QwRootFile {
       std::map< const std::string, std::vector<QwRootNTuple*> >::iterator iter;
       for (iter = fNTupleByName.begin(); iter != fNTupleByName.end(); iter++) {
         iter->second.front()->Fill();
+      }
+    }
+    
+    /// Coordinated fill and commit for all RNTuples (PERFORMANCE OPTIMIZED)
+    void FillAndCommitNTuples() {
+      // Fill all RNTuples without individual commits
+      std::map< const std::string, std::vector<QwRootNTuple*> >::iterator iter;
+      for (iter = fNTupleByName.begin(); iter != fNTupleByName.end(); iter++) {
+        // Disable individual batching for this fill
+        iter->second.front()->SetBatching(kFALSE);
+        iter->second.front()->Fill();
+      }
+      
+      // Increment global counter
+      fGlobalEventCounter++;
+      
+      // Commit all RNTuples together when reaching global cluster size
+      if (fGlobalEventCounter >= fGlobalClusterSize) {
+        CommitAllNTupleClusters();
+        fGlobalEventCounter = 0;
+      }
+    }
+    
+    /// Commit all RNTuple clusters at once
+    void CommitAllNTupleClusters() {
+      std::map< const std::string, std::vector<QwRootNTuple*> >::iterator iter;
+      for (iter = fNTupleByName.begin(); iter != fNTupleByName.end(); iter++) {
+        if (iter->second.front()->GetWriter()) {
+          iter->second.front()->GetWriter()->CommitCluster();
+        }
       }
     }
 #endif // HAS_RNTUPLE_SUPPORT
@@ -737,11 +1001,26 @@ class QwRootFile {
 
 #ifdef HAS_RNTUPLE_SUPPORT      
       // Close all RNTuples before closing the file
+      QwMessage << "QwRootFile::Close: Starting to close " << fNTupleByName.size() 
+               << " RNTuple types" << QwLog::endl;
+      
+      size_t ntuple_count = 0;
       for (auto& pair : fNTupleByName) {
+        QwMessage << "QwRootFile::Close: Closing RNTuple type '" << pair.first 
+                 << "' (" << pair.second.size() << " instances)" << QwLog::endl;
+        
         for (auto& ntuple : pair.second) {
-          if (ntuple) ntuple->Close();
+          if (ntuple) {
+            ntuple->Close();
+            ntuple_count++;
+          }
         }
+        
+        QwMessage << "QwRootFile::Close: Finished closing RNTuple type '" << pair.first << "'" << QwLog::endl;
       }
+      
+      QwMessage << "QwRootFile::Close: Successfully closed " << ntuple_count 
+               << " RNTuple instances" << QwLog::endl;
 #endif // HAS_RNTUPLE_SUPPORT
       
       // CRITICAL FIX: Explicitly write all trees before closing!
@@ -879,6 +1158,18 @@ class QwRootFile {
 
     /// RNTuple support flag
     Bool_t fEnableRNTuples;
+    
+    /// RNTuple performance options
+    Int_t fRNTupleClusterSize;
+    Bool_t fDisableRNTupleBatching;
+    Bool_t fPerDetectorRNTuples;       // Use per-detector RNTuples instead of monolithic
+    
+    /// Global cluster coordination for all RNTuples
+    UInt_t fGlobalEventCounter;        // Events processed across all RNTuples
+    UInt_t fGlobalClusterSize;         // Global cluster size (larger than individual)
+    
+    /// Per-detector RNTuple managers (one per base name like "evts", "muls")
+    std::map<std::string, QwPerDetectorRNTuples*> fPerDetectorRNTupleManagers;
 #endif // HAS_RNTUPLE_SUPPORT
 
     /// Is a tree registered for this name
@@ -1115,9 +1406,19 @@ void QwRootFile::ConstructNTupleFields(
 
     // New RNTuple with name, description, object, prefix
     ntuple = new QwRootNTuple(name, desc, object, prefix);
+    
+    // Enable per-detector mode if requested
+    if (fPerDetectorRNTuples) {
+      ntuple->EnablePerDetectorMode(kTRUE);
+      QwMessage << "Enabling per-detector RNTuples for '" << name << "'" << QwLog::endl;
+    }
 
     // Initialize the writer with our file
     ntuple->InitializeWriter(fRootFile);
+
+    // Apply performance settings to all RNtuples
+    ntuple->SetClusterSize(fRNTupleClusterSize);
+    ntuple->SetBatching(!fDisableRNTupleBatching);
 
     // Settings only relevant for new RNTuples
     if (name == "evt")
