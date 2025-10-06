@@ -866,7 +866,7 @@ void  QwVQWK_Channel::FillTreeVector(std::vector<Double_t> &values) const
 }
 
 #ifdef HAS_RNTUPLE_SUPPORT
-void  QwVQWK_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleModel>& model, TString &prefix, std::vector<Double_t> &values, std::vector<std::shared_ptr<Double_t>> &fieldPtrs)
+void  QwVQWK_Channel::ConstructNTupleAndVector(QwTrackedRNTupleModel& model, TString &prefix, std::vector<Double_t> &values, std::vector<std::shared_ptr<Double_t>> &fieldPtrs)
 {
   //  This channel is not used, so skip setting up the RNTuple.
   if (IsNameEmpty()) return;
@@ -898,7 +898,7 @@ void  QwVQWK_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleMode
   if (fDataToSave == kDerived) {
     // Only store the main hardware sum value, just like the original tree
     values.push_back(0.0);
-    auto field = model->MakeField<Double_t>(basename.Data());
+    auto field = model.MakeField<Double_t>(basename.Data());
     fieldPtrs.push_back(field);
     fTreeArrayNumEntries = 1;
     return;
@@ -909,28 +909,28 @@ void  QwVQWK_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleMode
     // Create the same structure as TTree kMoments mode
     if (bHw_sum) {
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_hw_sum").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_hw_sum").Data()));
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_hw_sum_m2").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_hw_sum_m2").Data()));
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_hw_sum_err").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_hw_sum_err").Data()));
     }
 
     if (bBlock) {
       for (Int_t i = 0; i < fBlocksPerEvent; i++) {
         values.push_back(0.0);
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_block%d", i)).Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_block%d", i)).Data()));
       }
     }
 
     if (bNum_samples) {
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_num_samples").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_num_samples").Data()));
     }
 
     if (bDevice_Error_Code) {
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_Device_Error_Code").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_Device_Error_Code").Data()));
     }
 
     fTreeArrayNumEntries = values.size() - fTreeArrayIndex;
@@ -941,20 +941,20 @@ void  QwVQWK_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleMode
   if (fDataToSave == kRaw) {
     if (bHw_sum) {
       values.push_back(0.0);
-      auto field = model->MakeField<Double_t>(TString::Format("%s_hw_sum", basename.Data()).Data());
+      auto field = model.MakeField<Double_t>(TString::Format("%s_hw_sum", basename.Data()).Data());
       fieldPtrs.push_back(field);
     }
 
     if (bHw_sum_raw) {
       values.push_back(0.0);
-      auto field = model->MakeField<Double_t>(TString::Format("%s_hw_sum_raw", basename.Data()).Data());
+      auto field = model.MakeField<Double_t>(TString::Format("%s_hw_sum_raw", basename.Data()).Data());
       fieldPtrs.push_back(field);
     }
 
     if (bBlock) {
       for (Int_t i = 0; i < fBlocksPerEvent; i++) {
         values.push_back(0.0);
-        auto field = model->MakeField<Double_t>(TString::Format("%s_block%d", basename.Data(), i).Data());
+        auto field = model.MakeField<Double_t>(TString::Format("%s_block%d", basename.Data(), i).Data());
         fieldPtrs.push_back(field);
       }
     }
@@ -962,26 +962,26 @@ void  QwVQWK_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleMode
     if (bBlock_raw) {
       for (Int_t i = 0; i < fBlocksPerEvent; i++) {
         values.push_back(0.0);
-        auto field = model->MakeField<Double_t>(TString::Format("%s_block%d_raw", basename.Data(), i).Data());
+        auto field = model.MakeField<Double_t>(TString::Format("%s_block%d_raw", basename.Data(), i).Data());
         fieldPtrs.push_back(field);
       }
     }
 
     if (bNum_samples) {
       values.push_back(0.0);
-      auto field = model->MakeField<Double_t>(TString::Format("%s_num_samples", basename.Data()).Data());
+      auto field = model.MakeField<Double_t>(TString::Format("%s_num_samples", basename.Data()).Data());
       fieldPtrs.push_back(field);
     }
 
     if (bDevice_Error_Code) {
       values.push_back(0.0);
-      auto field = model->MakeField<Double_t>(TString::Format("%s_Device_Error_Code", basename.Data()).Data());
+      auto field = model.MakeField<Double_t>(TString::Format("%s_Device_Error_Code", basename.Data()).Data());
       fieldPtrs.push_back(field);
     }
 
     if (bSequence_number) {
       values.push_back(0.0);
-      auto field = model->MakeField<Double_t>(TString::Format("%s_sequence_number", basename.Data()).Data());
+      auto field = model.MakeField<Double_t>(TString::Format("%s_sequence_number", basename.Data()).Data());
       fieldPtrs.push_back(field);
     }
   }

@@ -22,7 +22,8 @@ QwRootFile::QwRootFile(const TString& run_label)
     fMapFile(0), fEnableMapFile(kFALSE),
     fUpdateInterval(-1)
 #ifdef HAS_RNTUPLE_SUPPORT
-    , fEnableRNTuples(kFALSE)
+    , fEnableRNTuples(kFALSE), fRNTupleClusterSize(25000), fDisableRNTupleBatching(kFALSE),
+    fPerDetectorRNTuples(kFALSE), fGlobalEventCounter(0), fGlobalClusterSize(50000)
 #endif // HAS_RNTUPLE_SUPPORT
 {
   // Process the configuration options
@@ -244,6 +245,22 @@ void QwRootFile::DefineOptions(QwOptions &options)
   options.AddOptions("ROOT performance options")
     ("compression-level", po::value<int>()->default_value(1),
      "TFile compression level");
+
+#ifdef HAS_RNTUPLE_SUPPORT
+  // RNTuple-specific performance options
+  options.AddOptions("RNTuple performance options")
+    ("rntuple-cluster-size", po::value<int>()->default_value(25000),
+     "RNTuple cluster size for CommitCluster batching (events per cluster)");
+  options.AddOptions("RNTuple performance options")
+    ("disable-rntuple-batching", po::value<bool>()->default_value(false),
+     "Disable RNTuple CommitCluster batching (less efficient)");
+  options.AddOptions("RNTuple performance options")
+    ("rntuple-global-cluster-size", po::value<int>()->default_value(50000),
+     "Global cluster size for coordinating multiple RNTuple commits");
+  options.AddOptions("RNTuple performance options")
+    ("per-detector-rntuples", po::value<bool>()->default_value(false),
+     "Create one RNTuple per detector instead of one large RNTuple (may improve write performance)");
+#endif // HAS_RNTUPLE_SUPPORT
 }
 
 
@@ -276,6 +293,23 @@ void QwRootFile::ProcessOptions(QwOptions &options)
 #ifdef HAS_RNTUPLE_SUPPORT
   // Option 'enable-rntuples' to enable RNTuple output
   fEnableRNTuples = options.GetValue<bool>("enable-rntuples");
+  
+  // RNTuple performance options
+  fRNTupleClusterSize = options.GetValue<int>("rntuple-cluster-size");
+  fDisableRNTupleBatching = options.GetValue<bool>("disable-rntuple-batching");
+  fGlobalClusterSize = options.GetValue<int>("rntuple-global-cluster-size");
+  fPerDetectorRNTuples = options.GetValue<bool>("per-detector-rntuples");
+  
+  if (fEnableRNTuples) {
+    if (fPerDetectorRNTuples) {
+      QwMessage << "Per-detector RNTuples enabled - creating one RNTuple per detector (~28 fields each)" << QwLog::endl;
+    }
+    if (fDisableRNTupleBatching) {
+      QwMessage << "RNTuple batching disabled - using individual Fill() calls (less efficient)" << QwLog::endl;
+    } else {
+      QwMessage << "RNTuple batching enabled with cluster size: " << fRNTupleClusterSize << " events" << QwLog::endl;
+    }
+  }
 #endif // HAS_RNTUPLE_SUPPORT
 
   // Options 'disable-trees' and 'disable-histos' for disabling

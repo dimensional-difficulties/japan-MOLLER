@@ -228,7 +228,7 @@ void QwEPICSEvent::FillTreeVector(std::vector<Double_t>& values) const
 }
 
 #ifdef HAS_RNTUPLE_SUPPORT
-void QwEPICSEvent::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleModel>& model, TString& prefix, std::vector<Double_t>& values, std::vector<std::shared_ptr<Double_t>>& fieldPtrs)
+void QwEPICSEvent::ConstructNTupleAndVector(QwTrackedRNTupleModel& model, TString& prefix, std::vector<Double_t>& values, std::vector<std::shared_ptr<Double_t>>& fieldPtrs)
 {
   fTreeArrayIndex = values.size();
   for (size_t tagindex = 0; tagindex < fEPICSVariableType.size(); tagindex++) {
@@ -247,7 +247,7 @@ void QwEPICSEvent::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleModel>&
     	// Create RNTuple field (handle duplicate field names gracefully)
     	// Note: Unlike TTrees which allow duplicate branch names, RNTuples require unique field names
     	try {
-    	  auto field = model->MakeField<Double_t>(name.Data());
+    	  auto field = model.MakeField<Double_t>(name.Data());
     	  fieldPtrs.push_back(field);
     	} catch (const std::exception& e) {
     	  // Field already exists - this mimics TTree behavior where duplicate branches are allowed

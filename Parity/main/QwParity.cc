@@ -323,7 +323,7 @@ Int_t main(Int_t argc, Char_t* argv[])
 	  treerootfile->FillTreeBranches(epicsevent);
 	  treerootfile->FillTree("slow");
 	  
-	  // Fill RNTuple if enabled
+	  // Fill RNTuple if enabled - coordinated batching approach
 #ifdef HAS_RNTUPLE_SUPPORT
 	  if (gQwOptions.GetValue<bool>("enable-rntuples")) {
 	    treerootfile->FillNTupleFields(epicsevent);
@@ -367,7 +367,7 @@ Int_t main(Int_t argc, Char_t* argv[])
 	  treerootfile->FillTreeBranches(ringoutput);
 	  treerootfile->FillTree("evt");
 
-	  // Fill RNTuple if enabled
+	  // Fill RNTuple if enabled - coordinated batching approach  
 #ifdef HAS_RNTUPLE_SUPPORT
 	  if (gQwOptions.GetValue<bool>("enable-rntuples")) {
 	    treerootfile->FillNTupleFields(ringoutput);
@@ -384,7 +384,7 @@ Int_t main(Int_t argc, Char_t* argv[])
           // Fill data handler tree branches
           datahandlerarray_evt.FillTreeBranches(treerootfile);
 
-          // Fill data handler RNTuple fields if enabled
+          // Fill data handler RNTuple fields if enabled - coordinated batching approach
 #ifdef HAS_RNTUPLE_SUPPORT
           if (gQwOptions.GetValue<bool>("enable-rntuples")) {
             datahandlerarray_evt.FillNTupleFields(treerootfile);
@@ -403,7 +403,7 @@ Int_t main(Int_t argc, Char_t* argv[])
 	    treerootfile->FillTreeBranches(helicitypattern.GetPairDifference());
 	    treerootfile->FillTree("pr");
 	    
-	    // Fill pair RNTuples if enabled
+	    // Fill pair RNTuples if enabled - coordinated batching approach
 #ifdef HAS_RNTUPLE_SUPPORT
 	    if (gQwOptions.GetValue<bool>("enable-rntuples")) {
 	      burstrootfile->FillNTupleFields("pr_yield", helicitypattern.GetPairYield());
@@ -640,6 +640,10 @@ Int_t main(Int_t argc, Char_t* argv[])
     if (gQwOptions.GetValue<bool>("enable-rntuples")) {
       burstrootfile->FillNTupleFields(burstsum);
       burstrootfile->FillNTuple("bursts");
+      
+      // Commit all remaining RNTuple clusters for optimal performance
+      treerootfile->CommitAllNTupleClusters();
+      burstrootfile->CommitAllNTupleClusters();
     }
 #endif
 

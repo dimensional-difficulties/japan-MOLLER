@@ -1497,7 +1497,7 @@ void  QwHelicity::FillTreeVector(std::vector<Double_t> &values) const
 }
 
 #ifdef HAS_RNTUPLE_SUPPORT
-void QwHelicity::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleModel>& model, TString &prefix, std::vector<Double_t> &values, std::vector<std::shared_ptr<Double_t>>& fieldPtrs)
+void QwHelicity::ConstructNTupleAndVector(QwTrackedRNTupleModel& model, TString &prefix, std::vector<Double_t> &values, std::vector<std::shared_ptr<Double_t>>& fieldPtrs)
 {
   SetHistoTreeSave(prefix);
 
@@ -1511,65 +1511,65 @@ void QwHelicity::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleModel>& m
     {
       basename = "delayed_helicity";   //predicted delayed helicity
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "reported_helicity";  //delayed helicity reported by the input register.
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "pattern_phase";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "pattern_number";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "pattern_seed";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "event_number";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       for (size_t i=0; i<fWord.size(); i++)
 	{
 	  basename = fWord[i].fWordName;
 	  values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
 	}
     }
   else if(fHistoType==kHelSavePattern)
     {
       basename = "actual_helicity";    //predicted actual helicity before being delayed.
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "actual_pattern_polarity";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "actual_previous_pattern_polarity";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "delayed_pattern_polarity";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "pattern_number";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       basename = "pattern_seed";
       values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       //
       for (size_t i=0; i<fWord.size(); i++){
 	basename = fWord[i].fWordName;
 	values.push_back(0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       }
     }
 

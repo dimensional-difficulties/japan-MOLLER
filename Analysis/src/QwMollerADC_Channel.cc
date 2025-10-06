@@ -870,7 +870,7 @@ void  QwMollerADC_Channel::FillTreeVector(std::vector<Double_t> &values) const
 }
 
 #ifdef HAS_RNTUPLE_SUPPORT
-void  QwMollerADC_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupleModel>& model, TString& prefix, std::vector<Double_t>& values, std::vector<std::shared_ptr<Double_t>>& fieldPtrs)
+void  QwMollerADC_Channel::ConstructNTupleAndVector(QwTrackedRNTupleModel& model, TString& prefix, std::vector<Double_t>& values, std::vector<std::shared_ptr<Double_t>>& fieldPtrs)
 {
   //For rntuple 
   if (IsNameEmpty()) {
@@ -903,7 +903,7 @@ void  QwMollerADC_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupl
     if (fDataToSave == kDerived) {
       // Only store the main hardware sum value, just like the original tree
       values.resize(values.size() + 1, 0.0);
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
       fTreeArrayNumEntries = 1;
       return;
     }
@@ -913,28 +913,28 @@ void  QwMollerADC_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupl
       // Create the same structure as TTree kMoments mode
       if (bHw_sum) {
         values.push_back(0.0);
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_hw_sum").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_hw_sum").Data()));
         values.push_back(0.0);
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_hw_sum_m2").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_hw_sum_m2").Data()));
         values.push_back(0.0);
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_hw_sum_err").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_hw_sum_err").Data()));
       }
 
       if (bBlock) {
         for (Int_t i = 0; i < fBlocksPerEvent; i++) {
           values.push_back(0.0);
-          fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_block%d", i)).Data()));
+          fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_block%d", i)).Data()));
         }
       }
 
       if (bNum_samples) {
         values.push_back(0.0);
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_num_samples").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_num_samples").Data()));
       }
 
       if (bDevice_Error_Code) {
         values.push_back(0.0);
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_Device_Error_Code").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_Device_Error_Code").Data()));
       }
 
       fTreeArrayNumEntries = values.size() - fTreeArrayIndex;
@@ -968,47 +968,47 @@ void  QwMollerADC_Channel::ConstructNTupleAndVector(std::unique_ptr<ROOT::RNTupl
     // Add fields in the same order as FillTreeVector
     // hw_sum
     if (bHw_sum) {
-      fieldPtrs.push_back(model->MakeField<Double_t>(basename.Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>(basename.Data()));
     }
 
     if (bBlock) {
       for (Int_t i = 0; i < fBlocksPerEvent; i++) {
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_block%d", i)).Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_block%d", i)).Data()));
       }
     }
 
     // num_samples
     if (bNum_samples) {
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_num_samples").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_num_samples").Data()));
     }
 
     // Device_Error_Code
     if (bDevice_Error_Code) {
-      fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_Device_Error_Code").Data()));
+      fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_Device_Error_Code").Data()));
     }
 
     if (fDataToSave == kRaw) {
       // hw_sum_raw
       if (bHw_sum_raw) {
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_raw").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_raw").Data()));
       }
 
       if (bBlock_raw) {
         for (Int_t i = 0; i < fBlocksPerEvent; i++) {
-          fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_block%d_raw", i)).Data()));
+          fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_block%d_raw", i)).Data()));
         }
       }
 
       for(int i = 0; i < 4; i++){
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_sumsq%d_low", i)).Data()));
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_sumsq%d_high", i)).Data()));
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_min%d", i)).Data()));
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + Form("_max%d", i)).Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_sumsq%d_low", i)).Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_sumsq%d_high", i)).Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_min%d", i)).Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + Form("_max%d", i)).Data()));
       }
       
       // sequence_number
       if (bSequence_number) {
-        fieldPtrs.push_back(model->MakeField<Double_t>((basename + "_sequence_number").Data()));
+        fieldPtrs.push_back(model.MakeField<Double_t>((basename + "_sequence_number").Data()));
       }
     }
 
