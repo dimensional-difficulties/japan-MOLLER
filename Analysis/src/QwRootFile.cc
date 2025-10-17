@@ -260,6 +260,9 @@ void QwRootFile::DefineOptions(QwOptions &options)
   options.AddOptions("RNTuple performance options")
     ("per-detector-rntuples", po::value<bool>()->default_value(false),
      "Create one RNTuple per detector instead of one large RNTuple (may improve write performance)");
+  options.AddOptions("RNTuple performance options")
+    ("per-subsystem-rntuples", po::value<bool>()->default_value(false),
+     "Create one RNTuple per subsystem (BPM, BCM, MainDet, etc.) - recommended for best performance");
 #endif // HAS_RNTUPLE_SUPPORT
 }
 
@@ -299,9 +302,18 @@ void QwRootFile::ProcessOptions(QwOptions &options)
   fDisableRNTupleBatching = options.GetValue<bool>("disable-rntuple-batching");
   fGlobalClusterSize = options.GetValue<int>("rntuple-global-cluster-size");
   fPerDetectorRNTuples = options.GetValue<bool>("per-detector-rntuples");
+  fPerSubsystemRNTuples = options.GetValue<bool>("per-subsystem-rntuples");
   
   if (fEnableRNTuples) {
-    if (fPerDetectorRNTuples) {
+    // Check for conflicting options
+    if (fPerDetectorRNTuples && fPerSubsystemRNTuples) {
+      QwError << "Cannot use both --per-detector-rntuples and --per-subsystem-rntuples! Using per-subsystem mode." << QwLog::endl;
+      fPerDetectorRNTuples = false;
+    }
+    
+    if (fPerSubsystemRNTuples) {
+      QwMessage << "Per-subsystem RNTuples enabled - creating ~10-15 RNTuples (BPM, BCM, MainDet, etc.)" << QwLog::endl;
+    } else if (fPerDetectorRNTuples) {
       QwMessage << "Per-detector RNTuples enabled - creating one RNTuple per detector (~28 fields each)" << QwLog::endl;
     }
     if (fDisableRNTupleBatching) {

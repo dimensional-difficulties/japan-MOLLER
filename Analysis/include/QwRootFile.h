@@ -19,6 +19,7 @@ using std::type_info;
 #include "ROOT/RField.hxx"
 #include "ROOT/RNTupleWriter.hxx"
 #include "QwPerDetectorRNTuples.h"
+#include "QwPerSubsystemRNTuples.h"
 #endif
 
 // Qweak headers
@@ -303,7 +304,8 @@ class QwRootNTuple {
     : fName(name), fDesc(desc), fPrefix(prefix), fType("type undefined"),
       fCurrentEvent(0), fNumEventsCycle(0), fNumEventsToSave(0), fNumEventsToSkip(0),
       fClusterSize(25000), fEventsInCurrentCluster(0), fEnableBatching(kTRUE),
-      fUsePerDetectorMode(kFALSE), fPerDetectorManager(nullptr) {
+      fUsePerDetectorMode(kFALSE), fPerDetectorManager(nullptr),
+      fUsePerSubsystemMode(kFALSE), fPerSubsystemManager(nullptr) {
       // Create tracked RNTuple model
       fTrackedModel = new QwTrackedRNTupleModel();
     }
@@ -314,7 +316,8 @@ class QwRootNTuple {
     : fName(name), fDesc(desc), fPrefix(prefix), fType("type undefined"),
       fCurrentEvent(0), fNumEventsCycle(0), fNumEventsToSave(0), fNumEventsToSkip(0),
       fClusterSize(25000), fEventsInCurrentCluster(0), fEnableBatching(kTRUE),
-      fUsePerDetectorMode(kFALSE), fPerDetectorManager(nullptr) {
+      fUsePerDetectorMode(kFALSE), fPerDetectorManager(nullptr),
+      fUsePerSubsystemMode(kFALSE), fPerSubsystemManager(nullptr) {
       // Create tracked RNTuple model
       fTrackedModel = new QwTrackedRNTupleModel();
       
@@ -335,7 +338,14 @@ class QwRootNTuple {
     void Close() {
       QwMessage << "QwRootNTuple::Close: Closing RNTuple '" << fName << "'" << QwLog::endl;
       
-      if (fUsePerDetectorMode && fPerDetectorManager) {
+      if (fUsePerSubsystemMode && fPerSubsystemManager) {
+        QwMessage << "QwRootNTuple::Close: Closing per-subsystem manager for '" << fName << "'" << QwLog::endl;
+        fPerSubsystemManager->Close();
+        QwMessage << "QwRootNTuple::Close: Deleting per-subsystem manager for '" << fName << "'" << QwLog::endl;
+        delete fPerSubsystemManager;
+        fPerSubsystemManager = nullptr;
+        QwMessage << "QwRootNTuple::Close: Finished closing per-subsystem mode for '" << fName << "'" << QwLog::endl;
+      } else if (fUsePerDetectorMode && fPerDetectorManager) {
         QwMessage << "QwRootNTuple::Close: Closing per-detector manager for '" << fName << "'" << QwLog::endl;
         fPerDetectorManager->Close();
         QwMessage << "QwRootNTuple::Close: Deleting per-detector manager for '" << fName << "'" << QwLog::endl;
@@ -405,7 +415,10 @@ class QwRootNTuple {
 
     /// Initialize the RNTuple writer with a file
     void InitializeWriter(TFile* file) {
-      if (fUsePerDetectorMode) {
+      if (fUsePerSubsystemMode) {
+        // Per-subsystem mode: create separate RNTuples for each subsystem
+        InitializePerSubsystemWriters(file);
+      } else if (fUsePerDetectorMode) {
         // Per-detector mode: create separate RNTuples for each detector
         InitializePerDetectorWriters(file);
       } else {
@@ -501,6 +514,59 @@ class QwRootNTuple {
       }
     }
     
+    /// Initialize per-subsystem RNTuple writers
+    void InitializePerSubsystemWriters(TFile* file) {
+      if (fVector.empty() || fFieldPtrs.empty()) {
+        QwError << "No fields defined for per-subsystem RNTuples for " << fName << QwLog::endl;
+        return;
+      }
+      
+      if (!fTrackedModel) {
+        QwError << "RNTuple tracked model not created for " << fName << QwLog::endl;
+        return;
+      }
+      
+      // Get field names from tracked model
+      const auto& field_names = fTrackedModel->GetFieldNames();
+      
+      if (field_names.empty()) {
+        QwWarning << "No field names tracked during model construction for " << fName << QwLog::endl;
+        QwWarning << "Falling back to monolithic RNTuple mode" << QwLog::endl;
+        fUsePerSubsystemMode = kFALSE;
+        InitializeMonolithicWriter(file);
+        return;
+      }
+      
+      if (field_names.size() != fFieldPtrs.size()) {
+        QwWarning << "Field name count (" << field_names.size() 
+                 << ") doesn't match field pointer count (" << fFieldPtrs.size() << ")" << QwLog::endl;
+        QwWarning << "Falling back to monolithic RNTuple mode" << QwLog::endl;
+        fUsePerSubsystemMode = kFALSE;
+        InitializeMonolithicWriter(file);
+        return;
+      }
+      
+      try {
+        // Set cluster size first
+        fPerSubsystemManager->SetClusterSize(fClusterSize);
+        
+        // Initialize the per-subsystem manager
+        fPerSubsystemManager->Initialize(file);
+        
+        // Register all fields (they will be automatically grouped by subsystem)
+        fPerSubsystemManager->RegisterFields(field_names);
+        
+        QwMessage << "Initialized per-subsystem RNTuples for '" << fName 
+                 << "' with fields grouped by subsystem" << QwLog::endl;
+        
+      } catch (const std::exception& e) {
+        QwError << "Failed to initialize per-subsystem RNTuples: " << e.what() << QwLog::endl;
+        QwWarning << "Falling back to monolithic RNTuple mode" << QwLog::endl;
+        fUsePerSubsystemMode = kFALSE;
+        InitializeMonolithicWriter(file);
+      }
+    }
+    
   public:
 
     /// Fill the fields for generic objects
@@ -510,7 +576,10 @@ class QwRootNTuple {
         // Fill the field vector
         object.FillNTupleVector(fVector);
         
-        if (fUsePerDetectorMode && fPerDetectorManager) {
+        if (fUsePerSubsystemMode && fPerSubsystemManager) {
+          // Per-subsystem mode: fill each subsystem's RNTuple
+          FillPerSubsystemRNTuples();
+        } else if (fUsePerDetectorMode && fPerDetectorManager) {
           // Per-detector mode: fill each detector's RNTuple separately
           FillPerDetectorRNTuples();
         } else if (fWriter) {
@@ -596,6 +665,41 @@ class QwRootNTuple {
         fCurrentEvent %= fNumEventsCycle;
       }
     }
+    
+    /// Fill per-subsystem RNTuples
+    void FillPerSubsystemRNTuples() {
+      if (!fTrackedModel) {
+        QwError << "Tracked model not available for per-subsystem fill" << QwLog::endl;
+        return;
+      }
+      
+      // Get field names
+      const auto& field_names = fTrackedModel->GetFieldNames();
+      
+      if (field_names.size() != fVector.size()) {
+        QwError << "Field name count mismatch in per-subsystem fill: " 
+                << field_names.size() << " names vs " << fVector.size() << " values" << QwLog::endl;
+        return;
+      }
+      
+      // Create map of field_name -> value for this event
+      std::map<std::string, Double_t> field_values;
+      for (size_t i = 0; i < field_names.size(); ++i) {
+        field_values[field_names[i]] = fVector[i];
+      }
+      
+      // Fill all subsystems with their respective fields
+      fPerSubsystemManager->Fill(field_values);
+      
+      // Commit clusters
+      fPerSubsystemManager->CommitAllClusters();
+      
+      // Update event counter
+      fCurrentEvent++;
+      if (fNumEventsCycle > 0) {
+        fCurrentEvent %= fNumEventsCycle;
+      }
+    }
 
     /// Fill the RNTuple (called by FillTree wrapper methods)
     void Fill() {
@@ -636,8 +740,19 @@ class QwRootNTuple {
       }
     }
     
+    /// Enable per-subsystem mode (must be called before InitializeWriter)
+    void EnablePerSubsystemMode(Bool_t enable = kTRUE) {
+      fUsePerSubsystemMode = enable;
+      if (enable && !fPerSubsystemManager) {
+        fPerSubsystemManager = new QwPerSubsystemRNTuples(fName, fDesc);
+      }
+    }
+    
     /// Check if using per-detector mode
     Bool_t IsPerDetectorMode() const { return fUsePerDetectorMode; }
+    
+    /// Check if using per-subsystem mode
+    Bool_t IsPerSubsystemMode() const { return fUsePerSubsystemMode; }
 
     /// Get the name of the RNTuple
     const std::string& GetName() const { return fName; }
@@ -696,6 +811,10 @@ class QwRootNTuple {
     Bool_t fUsePerDetectorMode;    // Use per-detector RNTuples instead of monolithic
     QwPerDetectorRNTuples* fPerDetectorManager; // Manager for per-detector RNTuples
     std::map<std::string, std::vector<size_t>> fDetectorFieldIndices; // Map detector to field indices
+    
+    /// Per-subsystem mode
+    Bool_t fUsePerSubsystemMode;   // Use per-subsystem RNTuples (BPM, BCM, etc.)
+    QwPerSubsystemRNTuples* fPerSubsystemManager; // Manager for per-subsystem RNTuples
 
   friend class QwRootFile;
 };
@@ -1163,6 +1282,7 @@ class QwRootFile {
     Int_t fRNTupleClusterSize;
     Bool_t fDisableRNTupleBatching;
     Bool_t fPerDetectorRNTuples;       // Use per-detector RNTuples instead of monolithic
+    Bool_t fPerSubsystemRNTuples;      // Use per-subsystem RNTuples (BPM, BCM, MainDet, etc.)
     
     /// Global cluster coordination for all RNTuples
     UInt_t fGlobalEventCounter;        // Events processed across all RNTuples
@@ -1170,6 +1290,9 @@ class QwRootFile {
     
     /// Per-detector RNTuple managers (one per base name like "evts", "muls")
     std::map<std::string, QwPerDetectorRNTuples*> fPerDetectorRNTupleManagers;
+    
+    /// Per-subsystem RNTuple managers (one per base name like "evts", "muls")
+    std::map<std::string, QwPerSubsystemRNTuples*> fPerSubsystemRNTupleManagers;
 #endif // HAS_RNTUPLE_SUPPORT
 
     /// Is a tree registered for this name
@@ -1407,8 +1530,13 @@ void QwRootFile::ConstructNTupleFields(
     // New RNTuple with name, description, object, prefix
     ntuple = new QwRootNTuple(name, desc, object, prefix);
     
+    // Enable per-subsystem mode if requested (takes precedence over per-detector)
+    if (fPerSubsystemRNTuples) {
+      ntuple->EnablePerSubsystemMode(kTRUE);
+      QwMessage << "Enabling per-subsystem RNTuples for '" << name << "'" << QwLog::endl;
+    }
     // Enable per-detector mode if requested
-    if (fPerDetectorRNTuples) {
+    else if (fPerDetectorRNTuples) {
       ntuple->EnablePerDetectorMode(kTRUE);
       QwMessage << "Enabling per-detector RNTuples for '" << name << "'" << QwLog::endl;
     }
