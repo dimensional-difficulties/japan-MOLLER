@@ -1144,13 +1144,14 @@ class QwRootFile {
       
       // CRITICAL FIX: Explicitly write all trees before closing!
       if (fRootFile) {
-
+        // Ensure we're in the root directory of the file
+        fRootFile->cd();
+        
         for (auto iter = fTreeByName.begin(); iter != fTreeByName.end(); iter++) {
           if (!iter->second.empty() && iter->second.front()) {
             TTree* tree = iter->second.front()->GetTree();
             if (tree && tree->GetEntries() > 0) {
-
-              tree->Write();
+              tree->Write("", TObject::kOverwrite);
             }
           }
         }
