@@ -73,9 +73,11 @@ config_add_dependency(ROOT ${minimum_root_version})
 if(${ROOT_VERSION} VERSION_GREATER_EQUAL "6.36.0")
     message(STATUS "ROOT version ${ROOT_VERSION} supports RNTuple - enabling RNTuple functionality")
     add_definitions(-DHAS_RNTUPLE_SUPPORT)
+    set(HAS_RNTUPLE_SUPPORT TRUE)
 else()
     message(STATUS "ROOT version ${ROOT_VERSION} does not support RNTuple - disabling RNTuple functionality")
     message(STATUS "RNTuple support requires ROOT 6.36 or higher")
+    set(HAS_RNTUPLE_SUPPORT FALSE)
 endif()
 
 if(DEFINED ROOT_CXX_STANDARD)
@@ -388,6 +390,19 @@ endforeach()
 #----------------------------------------------------------------------------
 #  Build feedback library and executable
 ### add_subdirectory(Feedback)
+
+#----------------------------------------------------------------------------
+# Build minimal RNTuple test case
+if(HAS_RNTUPLE_SUPPORT)
+  add_executable(test_rntuple_bug test_rntuple_minimal.cpp)
+  target_link_libraries(test_rntuple_bug
+    ${ROOT_LIBRARIES}
+    ROOT::ROOTNTuple
+  )
+  target_include_directories(test_rntuple_bug PRIVATE ${ROOT_INCLUDE_DIRS})
+  target_compile_features(test_rntuple_bug PRIVATE cxx_std_17)
+  target_compile_definitions(test_rntuple_bug PRIVATE HAS_RNTUPLE_SUPPORT)
+endif()
 
 #----------------------------------------------------------------------------
 # uninstall

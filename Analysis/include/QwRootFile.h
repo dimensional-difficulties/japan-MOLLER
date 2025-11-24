@@ -1073,6 +1073,7 @@ class QwRootFile {
       if (fRootFile) {
         TString rootfilename = fRootFile->GetName();
 
+        QwMessage << "QwRootFile::Close() - Closing ROOT file: " << rootfilename << QwLog::endl;
         fRootFile->Close();
 
       }
@@ -1103,6 +1104,11 @@ class QwRootFile {
       // TMapFile has no support for Write
       if (fRootFile) retval = fRootFile->Write(name, option, bufsize);
       return retval;
+    }
+    
+    void Purge(Short_t nkeep = 1) {
+      // Purge old cycles from the ROOT file
+      if (fRootFile) fRootFile->Purge(nkeep);
     }
 
 

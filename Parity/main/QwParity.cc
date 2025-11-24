@@ -204,11 +204,27 @@ Int_t main(Int_t argc, Char_t* argv[])
       database.FillParameterFiles(detectors);
     }
     #endif // __USE_DATABASE__
+    
+    // In single-output-file mode, only construct histograms on the first segment
+    // to avoid creating duplicate histogram cycles when RNTuples are enabled
+    int segment_number = eventbuffer.GetSegmentNumber();
+    QwMessage << "Processing segment number: " << segment_number << QwLog::endl;
+    
+    bool construct_histograms = true;
+    if (gQwOptions.GetValue<bool>("single-output-file") && segment_number > 0) {
+      construct_histograms = false;
+      QwMessage << "Skipping histogram construction for segment " << segment_number 
+                << " (already constructed in segment 0)" << QwLog::endl;
+    }
+    
     //  Construct histograms
-    historootfile->ConstructHistograms("evt_histo", ringoutput);
-    historootfile->ConstructHistograms("mul_histo", helicitypattern);
-    burstrootfile->ConstructHistograms("burst_histo", patternsum_per_burst);
-    detectors.ShareHistograms(ringoutput);
+    if (construct_histograms) {
+      QwMessage << "Constructing histograms for segment " << segment_number << QwLog::endl;
+      historootfile->ConstructHistograms("evt_histo", ringoutput);
+      historootfile->ConstructHistograms("mul_histo", helicitypattern);
+      burstrootfile->ConstructHistograms("burst_histo", patternsum_per_burst);
+      detectors.ShareHistograms(ringoutput);
+    }
 
     //  Construct tree branches
     treerootfile->ConstructTreeBranches("evt", "MPS event data tree", ringoutput);
@@ -647,7 +663,8 @@ Int_t main(Int_t argc, Char_t* argv[])
       // Use different write methods based on output format
 #ifdef HAS_RNTUPLE_SUPPORT
       if (gQwOptions.GetValue<bool>("enable-rntuples") && gQwOptions.GetValue<bool>("disable-trees")) {
-        // RNTuple-only mode: use Close() for proper RNTuple finalization
+        // RNTuple-only mode: Don't call Write() - RNTuples handle their own writing
+        // Calling Write() causes histogram duplication across segments
         treerootfile->Close();
       } else {
 #endif
@@ -662,7 +679,8 @@ Int_t main(Int_t argc, Char_t* argv[])
       // Use different write methods based on output format
 #ifdef HAS_RNTUPLE_SUPPORT
       if (gQwOptions.GetValue<bool>("enable-rntuples") && gQwOptions.GetValue<bool>("disable-trees")) {
-        // RNTuple-only mode: use Close() for proper RNTuple finalization
+        // RNTuple-only mode: Don't call Write() - RNTuples handle their own writing
+        // Calling Write() causes histogram duplication across segments
         treerootfile->Close();
         burstrootfile->Close();
         historootfile->Close();
