@@ -24,7 +24,7 @@ What each flag does:
 |------|---------|
 | `-r 4` | Run number 4 → reads `QwMock_4.log`. |
 | `--data .` | **Required.** Directory holding the data file. The default is `/adaq1/data1/apar`; the mock log lives at the repo root, so point it at `.`. (Also settable via `$QW_DATA`.) |
-| `--config qwparity_simple.conf` | Top‑level options file ([Parity/prminput/qwparity_simple.conf](Parity/prminput/qwparity_simple.conf)). |
+| `--config qwparity_simple.conf` | Top‑level options file ([Parity/prminput/qwparity_simple.conf](../Parity/prminput/qwparity_simple.conf)). |
 | `--detectors mock_newdets.map` | **Required.** Loads the full mock beamline (Main + Injector) that actually contains channels like `bcm1h02a`. The config's default `isu_detectors.map` is a minimal test stand **without** those channels, so omitting this yields "Dependent variable … not found" and empty output. |
 | `--burstlength 15` | 15 **patterns** per burst → 90 patterns → 6 bursts. |
 
@@ -86,7 +86,7 @@ DISPLAY=:0 panguin/build/panguin -f panguin/macros/panguin_trend_live.cfg
 panguin/build/panguin -f panguin/macros/panguin_trend_live.cfg -P
 ```
 
-[panguin/macros/panguin_trend_live.cfg](panguin/macros/panguin_trend_live.cfg)
+[panguin/macros/panguin_trend_live.cfg](../panguin/macros/panguin_trend_live.cfg)
 reads `rootfile /dev/shm/QwMemMapFile.map` and draws `trend_bcm1h02a`,
 `trend_bcm1h15`, `trend_bcm_target`, `trend_bpm1h04X`.
 
@@ -130,7 +130,7 @@ The same 4 per‑pattern asymmetry channels (`bcm1h02a`, `bcm1h15`, `bcm_target`
 
 ### 3c. Running the benchmark
 
-The harness lives in [benchmarks/display_encoding/](benchmarks/display_encoding/)
+The harness lives in [benchmarks/display_encoding/](../benchmarks/display_encoding/)
 (source ROOT and build `qwparity` first):
 
 ```bash
@@ -143,10 +143,10 @@ BENCH_METHODS='BASE TREE PROFILE' bash benchmarks/display_encoding/bench.sh
 
 It writes per‑rep rows and logs under `/dev/shm/japan_bench/` (override with the
 `BENCH_OUT` env var), invokes
-[benchmarks/display_encoding/footprint.C](benchmarks/display_encoding/footprint.C)
+[benchmarks/display_encoding/footprint.C](../benchmarks/display_encoding/footprint.C)
 for the footprint value, and prints a summary table. Supporting maps:
 `bench_dh_profile.map`, `bench_dh_graph.map`, `bench_burstgraph.map`
-(in [Parity/prminput/](Parity/prminput/)).
+(in [Parity/prminput/](../Parity/prminput/)).
 
 
 ---
