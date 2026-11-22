@@ -46,8 +46,9 @@ The output is `rootfiles/rntuple/isu_sample_4.root`. The file name comes from `r
 
 Options:
 
-- `--enable-rntuples --disable-trees` writes RNTuples only. With `--enable-rntuples` alone, the file gets both TTrees and RNTuples, and panguin then draws from the TTrees.
+- `--enable-rntuples` writes RNTuples instead of TTrees: it turns TTree output off, because the two writers can't be used in the same run. `--disable-trees` makes that explicit.
 - `--rntuple-channel-arrays` writes one array field per channel instead of one field per value. panguin reads both layouts with the same configuration file. `--rntuple-compression-level 1` makes array-layout writing faster.
+- `--rntuple-segment-events N` writes the per-event RNTuples to a new segment file after every N events, so they can be drawn while the run is still being analyzed (see step 4).
 - `--disable-histos` skips histograms. The panguin configuration doesn't use them.
 
 The option names must be spelled exactly as shown (`--disable-trees`, not `--disable-ttrees`). `qwparity` prints a warning for unrecognized options.
@@ -115,6 +116,32 @@ export DISPLAY=:0
 cd panguin
 ./build/panguin -f macros/rntuple_mock_test.cfg
 ```
+
+### Segmented output: drawing a run in progress
+
+With `--rntuple-segment-events N`, `qwparity` writes the per-event RNTuples to segment files instead of the main file, starting a new one after every N physics events:
+
+```bash
+mkdir -p rootfiles/rntuple
+build/qwparity -r 4 --config qwparity_simple.conf --detectors mock_newdets.map \
+    --datahandlers mock_datahandlers.map --data . --rootfiles rootfiles/rntuple \
+    --enable-rntuples --rntuple-channel-arrays --rntuple-compression-level 1 \
+    --rntuple-segment-events 10000
+```
+
+This writes `isu_sample_4.rnt0000.root` to `isu_sample_4.rnt0009.root` for the 100,000 events. Histograms and the correlator results stay in `isu_sample_4.root`, which is completed at the end of the run.
+
+How the segments are written:
+
+- Each segment is written as `isu_sample_4.rntNNNN.root.part` and renamed when it is complete, so a reader never sees a partial segment.
+- A finished segment is completed in a background thread while the next one is filled. `--rntuple-segment-async=false` completes it in the event loop instead.
+- An RNTuple with no entries during a segment is left out of that segment file. The running sums, burst results and correlator results therefore appear only in the last segment or the main file.
+
+The same configuration file (`rootfile ../rootfiles/rntuple/isu_sample_4.root`) works unchanged:
+
+- **After the run:** panguin reads each RNTuple from all the segments as one dataset, and the plots are the same as from a single file.
+- **During the run:** `isu_sample_4.root` isn't readable yet, so panguin reads the completed segments.
+- **With `watchfile`:** new segments are picked up at each update.
 
 ## 5. Optional: compare with TTree output
 

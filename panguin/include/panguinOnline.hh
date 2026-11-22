@@ -99,6 +99,13 @@ private:
   std::vector < std::unique_ptr<ROOT::RDataFrame> > fNTupleDataFrames;
   // For each RNTuple: compiled Filter nodes, keyed by the translated cut
   std::vector < std::map <TString, ROOT::RDF::RNode> > fNTupleFilters;
+  // For each RNTuple: the files holding it, read as one dataset (the main
+  // file, then the segment files written by qwparity --rntuple-segment-events)
+  std::vector < std::vector <std::string> >   fNTupleFiles;
+  // For each RNTuple: the number of entries in all of its files
+  std::vector < ULong64_t >                   fNTupleTotalEntries;
+  // The completed segment files found by the last GetRootNTuple()
+  std::vector <TString>                       fNTupleSegments;
 #endif // HAS_RNTUPLE_SUPPORT
   std::vector < std::vector <TString> >       treeVars;
   std::vector < std::pair <TString,TString> > fileObjects;
@@ -156,7 +163,13 @@ public:
   Bool_t ResolveNTupleName(UInt_t iNTuple, const TString& name, const TString& leaf, TString& expr);
   Bool_t TranslateNTupleExpression(UInt_t iNTuple, const TString& in, TString& out, TString& missing);
   UInt_t FindNTupleForExpression(TString expr, const TString& ntupleName);
+  // Completed RNTuple segment files of the configured ROOT file
+  // (<name>.rntNNNN.root next to <name>.root), in order
+  std::vector<TString> FindNTupleSegments() const;
 #endif // HAS_RNTUPLE_SUPPORT
+  // Open the configured ROOT file as fRootFile; while it is not readable yet
+  // (run in progress), open the first RNTuple segment file instead
+  Bool_t OpenRootFileOrSegment();
 #ifdef QW_ENABLE_MAPFILE
   Bool_t LoadRNTupleSnapshot();
 #endif

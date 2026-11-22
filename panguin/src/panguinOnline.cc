@@ -125,8 +125,7 @@ void OnlineGUI::CreateGUI(const TGWindow *p, UInt_t w, UInt_t h)
       }
     }
   } else {
-    fRootFile = new TFile(fConfig->GetRootFile(),"READ");
-    if(!fRootFile->IsOpen()) {
+    if(!OpenRootFileOrSegment()) {
       cout << "ERROR:  rootfile: " << fConfig->GetRootFile()
            << " does not exist"
            << endl;
@@ -157,8 +156,7 @@ void OnlineGUI::CreateGUI(const TGWindow *p, UInt_t w, UInt_t h)
     }
   }
 #else
-  fRootFile = new TFile(fConfig->GetRootFile(),"READ");
-  if(!fRootFile->IsOpen()) {
+  if(!OpenRootFileOrSegment()) {
     cout << "ERROR:  rootfile: " << fConfig->GetRootFile()
 	 << " does not exist"
 	 << endl;
@@ -855,8 +853,12 @@ void OnlineGUI::GetRootNTuple() {
   fRootNTupleNames.clear();
   fNTupleFilters.clear();
   fNTupleDataFrames.clear();
+  fNTupleFiles.clear();
+  fNTupleTotalEntries.clear();
 
   std::list<TString> found;
+  // Files holding each RNTuple: the main file, then the segment files
+  std::map<TString, std::vector<std::string>> filesByName;
 #ifdef QW_ENABLE_MAPFILE
   if(fIsMapFile && fRNTupleMemFile) {
     TIter nextKey(fRNTupleMemFile->GetListOfKeys());
@@ -871,6 +873,7 @@ void OnlineGUI::GetRootNTuple() {
   } else
 #endif
   {
+  const TString mainName = fRootFile ? fRootFile->GetName() : "";
   for(UInt_t i=0; i<fileObjects.size(); i++) {
     if(fVerbosity>=2)
       cout << "Object = " << fileObjects[i].second <<
@@ -878,8 +881,27 @@ void OnlineGUI::GetRootNTuple() {
 
     if(fileObjects[i].second.Contains("RNTuple")) {
       found.push_back(fileObjects[i].first);
+      if(!mainName.IsNull()) filesByName[fileObjects[i].first].push_back(mainName.Data());
     }
   }
+
+  // RNTuple segment files written by qwparity --rntuple-segment-events
+  fNTupleSegments = FindNTupleSegments();
+  for(const auto& segment : fNTupleSegments) {
+    if(segment == mainName) continue;  // fRootFile is the first segment
+    TFile file(segment, "READ");
+    if(file.IsZombie()) continue;
+    TIter nextKey(file.GetListOfKeys());
+    TKey *key = nullptr;
+    while((key = static_cast<TKey*>(nextKey())) != nullptr) {
+      if(TString(key->GetClassName()).Contains("RNTuple")) {
+        found.push_back(key->GetName());
+        filesByName[key->GetName()].push_back(segment.Data());
+      }
+    }
+  }
+  if(fVerbosity>=1 && !fNTupleSegments.empty())
+    cout << "RNTuple segment files: " << fNTupleSegments.size() << endl;
   }
 
   found.sort();
@@ -906,24 +928,32 @@ void OnlineGUI::GetRootNTuple() {
 
     try {
       std::unique_ptr<ROOT::RNTupleReader> ntuple;
+      std::vector<std::string> files;
+      ULong64_t entries = 0;
 #ifdef QW_ENABLE_MAPFILE
       if(fIsMapFile && fRNTupleMemFile) {
         auto *anchor = fRNTupleMemFile->Get<ROOT::RNTuple>(ntupleName.Data());
         if(anchor != nullptr) {
           ntuple = ROOT::RNTupleReader::Open(*anchor);
         }
+        if(ntuple != nullptr) entries = ntuple->GetNEntries();
       } else
 #endif
       {
-        TString fileName = fRootFile ? fRootFile->GetName() : "";
-        if(!fileName.IsNull()) {
-          ntuple = ROOT::RNTupleReader::Open(ntupleName.Data(), fileName.Data());
+        files = filesByName[ntupleName];
+        if(!files.empty()) {
+          ntuple = ROOT::RNTupleReader::Open(ntupleName.Data(), files.front());
+          entries = ntuple->GetNEntries();
+          for(size_t f = 1; f < files.size(); f++)
+            entries += ROOT::RNTupleReader::Open(ntupleName.Data(), files[f])->GetNEntries();
         }
       }
 
       if(ntuple != nullptr) {
         fRootNTuple.push_back(std::move(ntuple));
         fRootNTupleNames.push_back(ntupleName);
+        fNTupleFiles.push_back(files);
+        fNTupleTotalEntries.push_back(entries);
       } else if(fVerbosity>=1) {
         cout << "Failed to open RNTuple " << ntupleName << ": null reader" << endl;
       }
@@ -1005,7 +1035,8 @@ void OnlineGUI::BuildNTupleAliases() {
     if(fRootNTuple[i] == nullptr) continue;
     auto& aliases = fNTupleAliases[i];
     try {
-      fNTupleNEntries[i] = fRootNTuple[i]->GetNEntries();
+      fNTupleNEntries[i] = (i < fNTupleTotalEntries.size()) ? fNTupleTotalEntries[i]
+                                                            : fRootNTuple[i]->GetNEntries();
       const auto& descriptor = fRootNTuple[i]->GetDescriptor();
       for (const auto& fieldDesc : descriptor.GetTopLevelFields()) {
         const TString field = fieldDesc.GetFieldName();
@@ -1207,6 +1238,35 @@ UInt_t OnlineGUI::FindNTupleForExpression(TString expr, const TString& ntupleNam
   return fRootNTuple.size() + 1;
 }
 
+std::vector<TString> OnlineGUI::FindNTupleSegments() const {
+  // The segment files of <dir>/<name>.root are <dir>/<name>.rntNNNN.root.
+  // qwparity renames them from .part when they are complete, so incomplete
+  // segments are never listed.
+  std::vector<TString> segments;
+  const TString path = fConfig->GetRootFile();
+  if (!path.EndsWith(".root")) return segments;
+  const TString dir = gSystem->GetDirName(path);
+  TString prefix = gSystem->BaseName(path);
+  prefix.Remove(prefix.Length() - 5);  // ".root"
+  prefix += ".rnt";
+
+  std::vector< std::pair<Long64_t, TString> > numbered;
+  void* dirp = gSystem->OpenDirectory(dir);
+  if (dirp == nullptr) return segments;
+  while (const char* entry = gSystem->GetDirEntry(dirp)) {
+    TString name = entry;
+    if (!name.BeginsWith(prefix) || !name.EndsWith(".root")) continue;
+    const TString number = name(prefix.Length(), name.Length() - prefix.Length() - 5);
+    if (number.IsNull() || !number.IsDigit()) continue;
+    numbered.emplace_back(number.Atoll(), dir + "/" + name);
+  }
+  gSystem->FreeDirectory(dirp);
+
+  std::sort(numbered.begin(), numbered.end());
+  for (auto& n : numbered) segments.push_back(n.second);
+  return segments;
+}
+
 #ifdef QW_ENABLE_MAPFILE
 Bool_t OnlineGUI::LoadRNTupleSnapshot() {
   if(fMapFile == nullptr) {
@@ -1236,6 +1296,42 @@ Bool_t OnlineGUI::LoadRNTupleSnapshot() {
 #endif
 
 #endif // HAS_RNTUPLE_SUPPORT
+
+Bool_t OnlineGUI::OpenRootFileOrSegment() {
+  const TString name = fConfig->GetRootFile();
+#ifdef HAS_RNTUPLE_SUPPORT
+  // While qwparity writes RNTuple segment files, the ROOT file itself is
+  // not complete (or has a temporary name) until the end of the run; the
+  // completed segments can be read already
+  const std::vector<TString> segments = FindNTupleSegments();
+  auto openSegment = [&]() {
+    TFile* segment = new TFile(segments.front(), "READ");
+    if (!segment->IsOpen() || segment->IsZombie()) {
+      delete segment;
+      return kFALSE;
+    }
+    if (fRootFile) {
+      fRootFile->Close();
+      delete fRootFile;
+    }
+    fRootFile = segment;
+    cout << "ROOT file " << name << " is not readable yet; reading its "
+         << segments.size() << " RNTuple segment files" << endl;
+    return kTRUE;
+  };
+  fRootFile = nullptr;
+  if (!segments.empty() && gSystem->AccessPathName(name) != 0 && openSegment())
+    return kTRUE;
+#endif // HAS_RNTUPLE_SUPPORT
+  fRootFile = new TFile(name, "READ");
+  const Bool_t usable = fRootFile->IsOpen() && !fRootFile->IsZombie()
+                        && fRootFile->GetSize() != -1 && fRootFile->ReadKeys() > 0;
+#ifdef HAS_RNTUPLE_SUPPORT
+  if (!usable && !segments.empty() && openSegment())
+    return kTRUE;
+#endif // HAS_RNTUPLE_SUPPORT
+  return fRootFile->IsOpen();
+}
 
 void OnlineGUI::MacroDraw(vector <TString> command) {
   // Called by DoDraw(), this will make a call to the defined macro, and
@@ -1385,6 +1481,13 @@ void OnlineGUI::TimerUpdate() {
   for(UInt_t i=0; i<fRootTree.size(); i++) {
     fRootTree[i]->Refresh();
   }
+#ifdef HAS_RNTUPLE_SUPPORT
+  // Segment files completed since the last update
+  if(FindNTupleSegments() != fNTupleSegments) {
+    GetRootNTuple();
+    GetNTupleVars();
+  }
+#endif // HAS_RNTUPLE_SUPPORT
   DoDraw();
   timer->Reset();
 
@@ -1425,7 +1528,13 @@ void OnlineGUI::CheckRootFile() {
   //   Reopen new root file,
   //   Reconnect the timer to TimerUpdate()
 
-  if(gSystem->AccessPathName(fConfig->GetRootFile())==0) {
+  Bool_t found = (gSystem->AccessPathName(fConfig->GetRootFile())==0);
+#ifdef HAS_RNTUPLE_SUPPORT
+  // While a run is analyzed, its completed RNTuple segment files can be
+  // read before the ROOT file itself is written
+  if(!found) found = !FindNTupleSegments().empty();
+#endif // HAS_RNTUPLE_SUPPORT
+  if(found) {
     cout << "Found the new run" << endl;
 #ifdef QW_ENABLE_MAPFILE
     if(fIsMapFile && fMapFile == nullptr) {
@@ -1484,7 +1593,7 @@ Int_t OnlineGUI::OpenRootFile() {
   }
 #endif // QW_ENABLE_MAPFILE
 
-  fRootFile = new TFile(fConfig->GetRootFile(),"READ");
+  OpenRootFileOrSegment();
   if(fRootFile->IsZombie() || (fRootFile->GetSize() == -1)
      || (fRootFile->ReadKeys()==0)) {
     cout << "New run not yet available.  Waiting..." << endl;
@@ -2094,8 +2203,7 @@ void OnlineGUI::PrintPages() {
     }
   } else {
 #endif
-  fRootFile = new TFile(fConfig->GetRootFile(),"READ");
-  if(!fRootFile->IsOpen()) {
+  if(!OpenRootFileOrSegment()) {
     cout << "ERROR:  rootfile: " << fConfig->GetRootFile()
 	 << " does not exist"
 	 << endl;
@@ -2418,8 +2526,12 @@ void OnlineGUI::DataFrameDraw(vector <TString> command) {
       fNTupleDataFrames.resize(fRootNTuple.size());
       fNTupleFilters.resize(fRootNTuple.size());
     }
-    if (!fNTupleDataFrames[iNTuple])
-      fNTupleDataFrames[iNTuple] = std::make_unique<ROOT::RDataFrame>(ntupleName.Data(), fRootFile->GetName());
+    if (!fNTupleDataFrames[iNTuple]) {
+      if (iNTuple < fNTupleFiles.size() && !fNTupleFiles[iNTuple].empty())
+        fNTupleDataFrames[iNTuple] = std::make_unique<ROOT::RDataFrame>(ntupleName.Data(), fNTupleFiles[iNTuple]);
+      else
+        fNTupleDataFrames[iNTuple] = std::make_unique<ROOT::RDataFrame>(ntupleName.Data(), fRootFile->GetName());
+    }
     ROOT::RDF::RNode node = *fNTupleDataFrames[iNTuple];
     if (!cut.IsNull()) {
       // Each cut is compiled once and its filter is shared by later plots

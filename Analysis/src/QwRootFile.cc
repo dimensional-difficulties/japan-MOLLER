@@ -7,8 +7,10 @@
 #include "QwRunCondition.h"
 #include "TH1.h"
 #include "TFileCacheWrite.h"
+#include "TROOT.h"
 
 #include <unistd.h>
+#include <chrono>
 #include <cstdio>
 
 #include <filesystem>
@@ -37,6 +39,10 @@ QwRootFile::QwRootFile(const TString& run_label)
 {
   // Process the configuration options
   ProcessOptions(gQwOptions);
+#ifdef HAS_RNTUPLE_SUPPORT
+  fNTupleSegmentBase = fRootFileDir
+    + Form("/%s%s", fRootFileStem.Data(), run_label.Data());
+#endif // HAS_RNTUPLE_SUPPORT
 
 #ifdef QW_ENABLE_MAPFILE
   // Check for the memory-mapped file flag
@@ -165,6 +171,17 @@ QwRootFile::QwRootFile(const TString& run_label)
  */
 QwRootFile::~QwRootFile()
 {
+#ifdef HAS_RNTUPLE_SUPPORT
+  // Complete the RNTuple segment file if Close() was not called
+  if (fNTupleSegmentFile || fNTupleSegmentCompletion.valid()) {
+    for (auto& pair : fNTupleByName)
+      for (auto* ntuple : pair.second)
+        if (ntuple) ntuple->Close();
+    WaitForNTupleSegment();
+    CloseNTupleSegment();
+  }
+#endif // HAS_RNTUPLE_SUPPORT
+
   // Keep the file on disk if any trees or histograms have been filled.
   // Also respect any other requests to keep the file around.
   if (!fMakePermanent) fMakePermanent = HasAnyFilled();
@@ -292,6 +309,18 @@ void QwRootFile::DefineOptions(QwOptions &options)
   options.AddOptions("ROOT output options")
     ("enable-rntuples", po::value<bool>()->default_bool_value(false),
      "enable RNTuple output");
+  options.AddOptions("ROOT output options")
+    ("rntuple-segment-events", po::value<int>()->default_value(0),
+     "write the per-event RNTuples to a new segment file after every N "
+     "physics events (<rootfile stem><run>.rntNNNN.root, each renamed from "
+     ".part when complete), so that finished segments can be read while the "
+     "run is analyzed; histograms and correlator results stay in the main "
+     "file (default=0, one file)");
+  options.AddOptions("ROOT output options")
+    ("rntuple-segment-async", po::value<bool>()->default_bool_value(true),
+     "complete each RNTuple segment file in a background thread while the "
+     "next segment is filled (default=true; --rntuple-segment-async=false "
+     "completes them in the event loop)");
 #endif // HAS_RNTUPLE_SUPPORT
 
   // Define the tree output prescaling options
@@ -409,6 +438,8 @@ void QwRootFile::ProcessOptions(QwOptions &options)
 #ifdef HAS_RNTUPLE_SUPPORT
   // Option 'enable-rntuples' to enable RNTuple output
   fEnableRNTuples = options.GetValue<bool>("enable-rntuples");
+  fNTupleSegmentEvents = std::max(0, options.GetValue<int>("rntuple-segment-events"));
+  fNTupleSegmentAsync = options.GetValue<bool>("rntuple-segment-async");
   // RNTuples require a TFile (RNTupleWriter::Append takes a TDirectory&);
   // they cannot be hosted by a TMapFile.  If both flags are requested,
   // disable RNTuples and warn loudly so the run does not crash later in
@@ -630,6 +661,129 @@ ROOT::RNTupleWriter* QwRootFile::NewNTupleWriter(
   QwMessage << "Created RNTuple '" << name << "' with " << nfields
             << " fields in file " << fRootFile->GetName() << QwLog::endl;
   return fNTupleWriters.back().get();
+}
+
+TFile* QwRootFile::GetNTupleOutputFile()
+{
+  if (fNTupleSegmentEvents <= 0) return fRootFile;
+  if (fNTupleSegmentFile == nullptr) OpenNTupleSegment();
+  return fNTupleSegmentFile;
+}
+
+Bool_t QwRootFile::OpenNTupleSegment()
+{
+  const TString name = GetNTupleSegmentName(fNTupleSegmentNumber);
+  // Written under a temporary name, so that readers only see complete files
+  const TString partname = name + ".part";
+  if (gSystem->AccessPathName(name.Data()) == 0) gSystem->Unlink(name.Data());
+  if (gSystem->AccessPathName(partname.Data()) == 0) gSystem->Unlink(partname.Data());
+
+  // Opening a file makes it the current directory: keep the current one,
+  // so that histograms are never created in a segment file
+  TDirectory::TContext context;
+  fNTupleSegmentFile = TFile::Open(partname.Data(), "RECREATE");
+  if (fNTupleSegmentFile == nullptr || fNTupleSegmentFile->IsZombie()) {
+    QwError << "RNTuple segment file " << partname << " could not be opened!" << QwLog::endl;
+    delete fNTupleSegmentFile;
+    fNTupleSegmentFile = nullptr;
+    return kFALSE;
+  }
+  if (fWriteCacheSize > 0 && fNTupleSegmentFile->GetCacheWrite() == nullptr) {
+    new TFileCacheWrite(fNTupleSegmentFile, fWriteCacheSize * 1024);
+  }
+  QwVerbose << "Opened RNTuple segment file " << partname << QwLog::endl;
+  return kTRUE;
+}
+
+void QwRootFile::CloseNTupleSegment()
+{
+  if (fNTupleSegmentFile == nullptr) return;
+  const auto start = std::chrono::steady_clock::now();
+  const TString partname = fNTupleSegmentFile->GetName();
+  fNTupleSegmentFile->Close();
+  delete fNTupleSegmentFile;
+  fNTupleSegmentFile = nullptr;
+
+  const TString name = GetNTupleSegmentName(fNTupleSegmentNumber);
+  if (rename(partname.Data(), name.Data()) != 0) {
+    QwWarning << "Couldn't rename " << partname << " to " << name << QwLog::endl;
+  } else {
+    QwMessage << "Completed RNTuple segment file " << name << " ("
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()
+              << " s)" << QwLog::endl;
+  }
+  fNTupleSegmentNumber++;
+}
+
+void QwRootFile::WaitForNTupleSegment()
+{
+  if (!fNTupleSegmentCompletion.valid()) return;
+  const auto start = std::chrono::steady_clock::now();
+  const std::string message = fNTupleSegmentCompletion.get();
+  const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  QwMessage << message;
+  if (waited > 0.01) QwMessage << ", waited " << waited << " s for it";
+  QwMessage << QwLog::endl;
+}
+
+void QwRootFile::StartNextNTupleSegment()
+{
+  const auto start = std::chrono::steady_clock::now();
+  // RNTuples without entries in this segment are not written to it
+  if (fNTupleSegmentAsync) {
+    // At most one segment is completed in the background: this bounds the
+    // memory of the page buffers and keeps the segments in order
+    WaitForNTupleSegment();
+
+    // Commit the entries and complete the file in a background thread, while
+    // the next segment is filled.  ROOT's thread safety (enabled with the
+    // implicit multi-threading) allows the two threads to write two files.
+    ROOT::EnableThreadSafety();
+    std::vector<std::unique_ptr<ROOT::RNTupleWriter>> writers;
+    for (auto& pair : fNTupleByName)
+      for (auto* ntuple : pair.second)
+        if (ntuple)
+          if (auto writer = ntuple->ReleaseWriter()) writers.push_back(std::move(writer));
+    TFile* file = fNTupleSegmentFile;
+    fNTupleSegmentFile = nullptr;
+    const std::string partname = file->GetName();
+    const std::string name = GetNTupleSegmentName(fNTupleSegmentNumber).Data();
+    fNTupleSegmentNumber++;
+    fNTupleSegmentCompletion = std::async(std::launch::async,
+      [writers = std::move(writers), file, partname, name]() mutable {
+        const auto begin = std::chrono::steady_clock::now();
+        std::string error;
+        try {
+          writers.clear();  // commits the RNTuples
+        } catch (const std::exception& e) {
+          error = e.what();
+        }
+        file->Close();
+        delete file;
+        if (rename(partname.c_str(), name.c_str()) != 0)
+          error += (error.empty() ? "" : "; ") + std::string("couldn't rename ") + partname;
+        std::ostringstream message;
+        message << (error.empty() ? "Completed" : "FAILED to complete")
+                << " RNTuple segment file " << name << " in the background ("
+                << std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count()
+                << " s" << (error.empty() ? "" : ": " + error) << ")";
+        return message.str();
+      });
+  } else {
+    for (auto& pair : fNTupleByName)
+      for (auto* ntuple : pair.second)
+        if (ntuple) ntuple->Close(false);
+    CloseNTupleSegment();
+  }
+
+  OpenNTupleSegment();
+  const ROOT::RNTupleWriteOptions options = GetRNTupleWriteOptions();
+  for (auto& pair : fNTupleByName)
+    for (auto* ntuple : pair.second)
+      if (ntuple) ntuple->SetOutput(fNTupleSegmentFile, options);
+  QwVerbose << "RNTuple segment switch took "
+            << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()
+            << " s in the event loop" << QwLog::endl;
 }
 #endif // HAS_RNTUPLE_SUPPORT
 

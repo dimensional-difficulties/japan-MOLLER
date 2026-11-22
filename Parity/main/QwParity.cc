@@ -350,6 +350,13 @@ Int_t main(Int_t argc, Char_t* argv[])
       //  Now, if this is not a physics event, go back and get a new event.
       if (! eventbuffer.IsPhysicsEvent()) continue;
 
+#ifdef HAS_RNTUPLE_SUPPORT
+      //  Start the next RNTuple segment file when it is due
+      //  (--rntuple-segment-events), before this event is filled
+      treerootfile->CountNTupleSegmentEvent();
+      if (burstrootfile != treerootfile) burstrootfile->CountNTupleSegmentEvent();
+#endif
+
 
       //  Fill the subsystem objects with their respective data for this event.
       eventbuffer.FillSubsystemData(detectors);

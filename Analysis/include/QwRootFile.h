@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <future>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -684,16 +685,23 @@ class QwRootNTuple {
       return true;
     }
 
-    /// Close and finalize the RNTuple writer
-    void Close() {
-      // An RNTuple that was never filled is still written, without entries
-      if (!fWriter && fModel && fFile) InitializeWriter(fFile, fOptions);
-      if (fWriter) {
-        // Explicitly commit any remaining data and close the writer
-        // This ensures all data is written to the file before destruction
-        fWriter.reset();  // This calls the destructor which should finalize the RNTuple
-      }
+    /// Close and finalize the RNTuple writer.  With writeIfEmpty, an RNTuple
+    /// that was never filled is still written, without entries.  After
+    /// Close(), SetOutput() and Fill() continue the RNTuple in another file
+    /// (a segment file, see QwRootFile::CountNTupleSegmentEvent).
+    void Close(bool writeIfEmpty = true) {
+      if (writeIfEmpty && !fWriter && fModel && fFile) InitializeWriter(fFile, fOptions);
+      // Destroying the writer commits the remaining entries to the file
+      fWriter.reset();
       fEntry.reset();
+    }
+
+    /// Hand over the writer, to commit its entries elsewhere (e.g. in a
+    /// background thread); as after Close(false), SetOutput() and Fill()
+    /// continue the RNTuple in another file
+    std::unique_ptr<ROOT::RNTupleWriter> ReleaseWriter() {
+      fEntry.reset();
+      return std::move(fWriter);
     }
 
   private:
@@ -750,7 +758,7 @@ class QwRootNTuple {
 
     /// Initialize the RNTuple writer with a file
     void InitializeWriter(TFile* file, const ROOT::RNTupleWriteOptions& options) {
-      if (!fModel) {
+      if (!fModel && !fModelTemplate) {
         QwError << "RNTuple model not created for " << fName << QwLog::endl;
         return;
       }
@@ -762,32 +770,52 @@ class QwRootNTuple {
       }
 
       try {
-        // Field names by the address of their buffer in the default entry, so
-        // that each value slot in fVector can be bound to its field below
-        std::unordered_map<const void*, std::string> field_name_by_ptr;
-        for (const auto& value : fModel->GetDefaultEntry()) {
-          field_name_by_ptr[value.GetPtr<void>().get()] = value.GetField().GetFieldName();
+        std::unique_ptr<ROOT::RNTupleModel> model;
+        const bool first_writer = (fModel != nullptr);
+        if (first_writer) {
+          // Field names by the address of their buffer in the default entry,
+          // to record the field of each value slot in fVector
+          std::unordered_map<const void*, std::string> field_name_by_ptr;
+          for (const auto& value : fModel->GetDefaultEntry()) {
+            field_name_by_ptr[value.GetPtr<void>().get()] = value.GetField().GetFieldName();
+          }
+          fNFields = field_name_by_ptr.size();
+          fBindings.clear();
+          for (size_t i = 0; i < fFieldPtrs.size() && i < fVector.size(); ++i) {
+            if (!fFieldPtrs[i]) continue;
+            auto it = field_name_by_ptr.find(fFieldPtrs[i].get());
+            if (it == field_name_by_ptr.end()) {
+              QwError << "RNTuple " << fName << ": no field for value " << i << QwLog::endl;
+              continue;
+            }
+            fBindings.emplace_back(i, it->second);
+          }
+          // Each writer takes ownership of its model; keep a copy for the
+          // writers of later segment files
+          fModelTemplate = fModel->Clone();
+          model = std::move(fModel);
+        } else {
+          model = fModelTemplate->Clone();
         }
 
-        // Create the writer with the model (transfers ownership)
-        // Use Append to add RNTuple to existing TFile
-        fWriter = ROOT::RNTupleWriter::Append(std::move(fModel), fName, *file, options);
+        // Use Append to add the RNTuple to the existing TFile
+        fWriter = ROOT::RNTupleWriter::Append(std::move(model), fName, *file, options);
 
         // Let the writer read every value straight from fVector, which is
         // never resized after construction, instead of copying each value
         // into the field buffers on every fill
         fEntry = fWriter->CreateEntry();
-        for (size_t i = 0; i < fFieldPtrs.size() && i < fVector.size(); ++i) {
-          if (!fFieldPtrs[i]) continue;
-          auto it = field_name_by_ptr.find(fFieldPtrs[i].get());
-          if (it == field_name_by_ptr.end()) {
-            QwError << "RNTuple " << fName << ": no field for value " << i << QwLog::endl;
-            continue;
-          }
-          fEntry->BindRawPtr(it->second, &fVector[i]);
+        for (const auto& binding : fBindings) {
+          fEntry->BindRawPtr(binding.second, &fVector[binding.first]);
         }
         // The default-entry buffers are no longer used
         fFieldPtrs.assign(fFieldPtrs.size(), nullptr);
+
+        if (!first_writer) {
+          QwVerbose << "Continued RNTuple '" << fName << "' in file "
+                    << file->GetName() << QwLog::endl;
+          return;
+        }
 
         const int algorithm = options.GetCompression() / 100;
         const char* algo_name = "UNKNOWN";
@@ -799,7 +827,7 @@ class QwRootNTuple {
         }
         QwMessage << "Created RNTuple '" << fName << "' with " << algo_name
                   << " compression (level " << options.GetCompression() % 100 << "), "
-                  << field_name_by_ptr.size() << " fields ("
+                  << fNFields << " fields ("
                   << fVector.size() << " values), cluster size "
                   << (options.GetApproxZippedClusterSize() >> 20) << " MiB, page buffer budget "
                   << (options.GetPageBufferBudget() >> 20) << " MiB in file "
@@ -826,8 +854,9 @@ class QwRootNTuple {
     /// Write one entry with the values filled by FillNTupleFields, like
     /// TTree::Fill after the branches of all objects have been filled
     void Fill() {
-      // All objects have added their fields by now: create the writer
-      if (!fWriter && fModel && fFile) InitializeWriter(fFile, fOptions);
+      // All objects have added their fields by now: create the writer (in a
+      // new segment file, from a copy of the model)
+      if (!fWriter && fFile && (fModel || fModelTemplate)) InitializeWriter(fFile, fOptions);
 
       // The entry's fields are bound to the fVector slots
       if (fWriter && fEntry) {
@@ -875,6 +904,11 @@ class QwRootNTuple {
     std::unique_ptr<ROOT::RNTupleWriter> fWriter;
     /// Entry whose fields are bound to the slots of fVector
     std::unique_ptr<ROOT::REntry> fEntry;
+    /// Copy of the model, for the writers in later segment files
+    std::unique_ptr<ROOT::RNTupleModel> fModelTemplate;
+    /// The field bound to each value slot: (index in fVector, field name)
+    std::vector<std::pair<size_t, std::string>> fBindings;
+    size_t fNFields = 0;
 
     /// Vector of values and shared field pointers (for RNTuple)
     std::vector<Double_t> fVector;
@@ -1044,7 +1078,7 @@ class QwRootFile {
       QwRootNTuple *ntuple = 0;
       if (! HasNTupleByName(name)) {
         ntuple = new QwRootNTuple(name, desc);
-        ntuple->SetOutput(fRootFile, GetRNTupleWriteOptions());
+        ntuple->SetOutput(GetNTupleOutputFile(), GetRNTupleWriteOptions());
       } else {
         // For simplicity, don't support copying existing RNTuples yet
         QwError << "Cannot create duplicate RNTuple: " << name << QwLog::endl;
@@ -1059,6 +1093,19 @@ class QwRootFile {
     /// when RNTuple output is disabled for this name.
     ROOT::RNTupleWriter* NewNTupleWriter(const std::string& name,
                                          std::unique_ptr<ROOT::RNTupleModel> model);
+
+    /// \brief Count one physics event for the RNTuple segment files
+    /// (--rntuple-segment-events N).  Call it once per physics event, before
+    /// anything of that event is filled: after every N events, the RNTuples
+    /// are committed, their segment file is completed, and the following
+    /// entries go to the next segment file.
+    void CountNTupleSegmentEvent() {
+      if (fNTupleSegmentEvents <= 0 || fNTupleSegmentFile == nullptr) return;
+      if (++fNTupleSegmentEventCount > fNTupleSegmentEvents) {
+        StartNextNTupleSegment();
+        fNTupleSegmentEventCount = 1;
+      }
+    }
 #endif // HAS_RNTUPLE_SUPPORT
 
     /// Get the tree with name
@@ -1239,6 +1286,9 @@ class QwRootFile {
         }
       }
       fNTupleWriters.clear();
+      // Complete the last segment file, after the previous one
+      WaitForNTupleSegment();
+      CloseNTupleSegment();
 #endif // HAS_RNTUPLE_SUPPORT
 
       // Step 5: Close the file
@@ -1325,6 +1375,37 @@ class QwRootFile {
 #ifdef HAS_RNTUPLE_SUPPORT
     /// Build the RNTuple write options from the configured settings
     ROOT::RNTupleWriteOptions GetRNTupleWriteOptions() const;
+
+    /// RNTuple segment files (--rntuple-segment-events): the per-event
+    /// RNTuples are written to <dir>/<stem><run>.rntNNNN.root instead of the
+    /// main file, each written as .part and renamed when it is complete
+    Int_t fNTupleSegmentEvents = 0;
+    Long64_t fNTupleSegmentEventCount = 0;
+    Int_t fNTupleSegmentNumber = 0;
+    TFile* fNTupleSegmentFile = nullptr;
+    /// <dir>/<stem><run label>, the segment file names without .rntNNNN.root
+    TString fNTupleSegmentBase;
+    /// Complete the finished segments in a background thread
+    /// (--rntuple-segment-async), while the next one is filled
+    Bool_t fNTupleSegmentAsync = kTRUE;
+    /// The background completion of the previous segment; returns the log message
+    std::future<std::string> fNTupleSegmentCompletion;
+    /// Wait for the background completion of the previous segment
+    void WaitForNTupleSegment();
+
+    /// The file for the per-event RNTuples: the current segment file (opened
+    /// at the first use), or the main file
+    TFile* GetNTupleOutputFile();
+    /// Name of segment file number n
+    TString GetNTupleSegmentName(Int_t n) const {
+      return fNTupleSegmentBase + Form(".rnt%04d.root", n);
+    }
+    Bool_t OpenNTupleSegment();
+    /// Complete the current segment file (its RNTuples must be closed)
+    void CloseNTupleSegment();
+    /// Commit the RNTuples to the current segment file, complete it, and
+    /// continue the RNTuples in the next one
+    void StartNextNTupleSegment();
 #endif // HAS_RNTUPLE_SUPPORT
     Int_t fBasketSize;
     Int_t fAutoFlush;
@@ -1641,7 +1722,7 @@ void QwRootFile::ConstructNTupleFields(
 
     // The writer is created with the first entry, after all objects of
     // this RNTuple have added their fields
-    ntuple->SetOutput(fRootFile, GetRNTupleWriteOptions());
+    ntuple->SetOutput(GetNTupleOutputFile(), GetRNTupleWriteOptions());
 
     // Settings only relevant for new RNTuples
     if (name == "evt")
